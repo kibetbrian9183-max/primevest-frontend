@@ -44,6 +44,9 @@ import {
   Loader2,
   CheckCircle2,
   ShieldCheck,
+  PartyPopper,
+  XCircle,
+  AlertTriangle,
 } from "lucide-react";
 
 
@@ -71,11 +74,11 @@ const c = {
 
 // ---------------------------------------------------------------------------
 // Backend wiring — points at the deployed Daraja server.
-// Set VITE_API_BASE_URL and VITE_API_KEY in your Vercel project's
-// Environment Variables (see the deploy README).
+// Set these two values for your deployment (or read them from your
+// bundler's env vars, e.g. import.meta.env.VITE_API_BASE_URL).
 // ---------------------------------------------------------------------------
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
-const API_KEY = import.meta.env.VITE_API_KEY || "";
+const API_BASE_URL = "https://YOUR-RENDER-URL.onrender.com";
+const API_KEY = "YOUR_FRONTEND_API_KEY"; // must match FRONTEND_API_KEY on the server
 
 async function mpesaApi(path, options = {}) {
   const res = await fetch(`${API_BASE_URL}${path}`, {
@@ -137,7 +140,7 @@ function rotateDigitStats(prev) {
   return nudged.map((v) => Number(((v / sum) * 100).toFixed(1)));
 }
 
-function TradingDashboard({ onLogout, onNavigate }) {
+function TradingDashboard({ onLogout, onNavigate, balance, onBalanceChange }) {
   const [data, setData] = useState(() => makeInitialSeries(BASE_PRICE, 80));
   const [zoomPoints, setZoomPoints] = useState(40);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -153,6 +156,8 @@ function TradingDashboard({ onLogout, onNavigate }) {
   const [selectedDigit, setSelectedDigit] = useState(5);
   const [flash, setFlash] = useState(null);
   const [digitStats, setDigitStats] = useState(INITIAL_DIGIT_STATS);
+  const [tradeInFlight, setTradeInFlight] = useState(false);
+  const [resultAlert, setResultAlert] = useState(null); // { type: "win" | "loss" | "error", title, message }
 
   const openingPriceRef = useRef(data[0].price);
 
@@ -199,9 +204,97 @@ function TradingDashboard({ onLogout, onNavigate }) {
     setStakeInput(String(n));
   }
 
+  // Which two contract types are offered for the active market tab.
+  const marketConfig = {
+    matches: {
+      left: { key: "matches", label: "Matches", hint: "Digit = prediction" },
+      right: { key: "differs", label: "Differs", hint: "Digit ≠ prediction" },
+      needsDigit: true,
+      digitLabel: "SELECT YOUR PREDICTION DIGIT",
+    },
+    evenodd: {
+      left: { key: "even", label: "Even", hint: "Last digit is even" },
+      right: { key: "odd", label: "Odd", hint: "Last digit is odd" },
+      needsDigit: false,
+      digitLabel: "LAST DIGIT PROBABILITY",
+    },
+    overunder: {
+      left: { key: "over", label: "Over", hint: `Digit > ${selectedDigit}` },
+      right: { key: "under", label: "Under", hint: `Digit < ${selectedDigit}` },
+      needsDigit: true,
+      digitLabel: "SELECT THRESHOLD DIGIT",
+    },
+  };
+  const market = marketConfig[activeTab];
+
+  function evaluateWin(side, resultDigit) {
+    if (side === "matches") return resultDigit === selectedDigit;
+    if (side === "differs") return resultDigit !== selectedDigit;
+    if (side === "even") return resultDigit % 2 === 0;
+    if (side === "odd") return resultDigit % 2 === 1;
+    if (side === "over") return resultDigit > selectedDigit;
+    if (side === "under") return resultDigit < selectedDigit;
+    return false;
+  }
+
   function handlePlaceTrade(side) {
+    if (tradeInFlight) return;
+
+    if (!stake || stake <= 0) {
+      setResultAlert({
+        type: "error",
+        title: "Enter a stake",
+        message: "Enter a stake amount before placing a trade.",
+      });
+      return;
+    }
+
+    if (stake > balance) {
+      setResultAlert({
+        type: "error",
+        title: "Insufficient balance",
+        message: `Your stake is $${stake.toFixed(2)} but your balance is only $${balance.toFixed(
+          2
+        )}. Deposit more funds to place this trade.`,
+      });
+      return;
+    }
+
     setFlash(side);
+    setTradeInFlight(true);
     window.setTimeout(() => setFlash(null), 500);
+
+    // Deduct the stake immediately, as a real broker would.
+    onBalanceChange?.(-stake);
+
+    const stakeAtPlacement = stake;
+    const payoutAtPlacement = Number((stakeAtPlacement * payoutRate).toFixed(2));
+
+    // Simulate the next tick resolving the contract.
+    window.setTimeout(() => {
+      const resultDigit = Math.floor(Math.random() * 10);
+      const won = evaluateWin(side, resultDigit);
+
+      if (won) {
+        onBalanceChange?.(payoutAtPlacement);
+        setResultAlert({
+          type: "win",
+          title: "Congratulations! 🎉",
+          message: `The last digit was ${resultDigit} — your trade won. $${payoutAtPlacement.toFixed(
+            2
+          )} has been added to your balance.`,
+        });
+      } else {
+        setResultAlert({
+          type: "loss",
+          title: "Trade lost",
+          message: `The last digit was ${resultDigit} — this trade didn't win. $${stakeAtPlacement.toFixed(
+            2
+          )} was deducted from your balance.`,
+        });
+      }
+      setTradeInFlight(false);
+    }, 1400);
   }
 
   return (
@@ -234,7 +327,7 @@ function TradingDashboard({ onLogout, onNavigate }) {
               className="flex items-center gap-1.5 h-10 px-3 rounded-xl border text-sm font-semibold font-mono"
               style={{ background: c.surfaceAlt, borderColor: c.border, color: c.text }}
             >
-              $0.00
+              ${balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
               <ChevronDown size={15} style={{ color: c.textDim }} />
             </button>
             {balanceMenuOpen && (
@@ -244,12 +337,9 @@ function TradingDashboard({ onLogout, onNavigate }) {
               >
                 <button className="w-full text-left px-4 py-3 text-sm hover:bg-white/5" style={{ color: c.text }}>
                   Real account
-                  <div className="text-xs font-mono" style={{ color: c.textDim }}>$0.00</div>
-                </button>
-                <div style={{ borderTop: `1px solid ${c.border}` }} />
-                <button className="w-full text-left px-4 py-3 text-sm hover:bg-white/5" style={{ color: c.text }}>
-                  Demo account
-                  <div className="text-xs font-mono" style={{ color: c.textDim }}>$10,000.00</div>
+                  <div className="text-xs font-mono" style={{ color: c.textDim }}>
+                    ${balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </div>
                 </button>
               </div>
             )}
@@ -535,10 +625,17 @@ function TradingDashboard({ onLogout, onNavigate }) {
             {/* Digit selector */}
             <div
               className="rounded-3xl border mb-4 px-3 py-4"
-              style={{ background: c.surface, borderColor: c.border }}
+              style={{ background: c.surface, borderColor: c.border, opacity: market.needsDigit ? 1 : 0.6 }}
             >
-              <div className="text-xs font-semibold tracking-wide mb-3 px-1" style={{ color: c.textDim }}>
-                LAST DIGIT PROBABILITY
+              <div className="flex items-center justify-between mb-3 px-1">
+                <span className="text-xs font-semibold tracking-wide" style={{ color: c.textDim }}>
+                  {market.digitLabel}
+                </span>
+                {!market.needsDigit && (
+                  <span className="text-[11px] font-medium" style={{ color: c.textFaint }}>
+                    Not used for Even/Odd
+                  </span>
+                )}
               </div>
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {digitStats.map((pct, digit) => {
@@ -547,17 +644,19 @@ function TradingDashboard({ onLogout, onNavigate }) {
                   return (
                     <button
                       key={digit}
-                      onClick={() => setSelectedDigit(digit)}
+                      onClick={() => market.needsDigit && setSelectedDigit(digit)}
+                      disabled={!market.needsDigit}
                       className="flex-shrink-0 flex flex-col items-center gap-1.5"
+                      style={{ cursor: market.needsDigit ? "pointer" : "default" }}
                     >
                       <span
                         className="flex items-center justify-center rounded-full font-bold text-base transition"
                         style={{
                           width: 46,
                           height: 46,
-                          background: selected ? c.amber : c.elevated,
-                          color: selected ? "#181205" : c.text,
-                          border: `1px solid ${selected ? c.amber : c.border}`,
+                          background: selected && market.needsDigit ? c.amber : c.elevated,
+                          color: selected && market.needsDigit ? "#181205" : c.text,
+                          border: `1px solid ${selected && market.needsDigit ? c.amber : c.border}`,
                         }}
                       >
                         {digit}
@@ -565,7 +664,7 @@ function TradingDashboard({ onLogout, onNavigate }) {
                       <span
                         className="text-[11px] font-mono tabular-nums transition-all duration-700 ease-out"
                         style={{
-                          color: selected ? c.amber : highest ? c.text : c.textDim,
+                          color: selected && market.needsDigit ? c.amber : highest ? c.text : c.textDim,
                           fontWeight: highest ? 700 : 400,
                         }}
                       >
@@ -719,32 +818,49 @@ function TradingDashboard({ onLogout, onNavigate }) {
               {/* Action buttons */}
               <div className="grid grid-cols-2 gap-3">
                 <button
-                  onClick={() => handlePlaceTrade("even")}
+                  onClick={() => handlePlaceTrade(market.left.key)}
+                  disabled={tradeInFlight}
                   className="flex flex-col items-center justify-center rounded-2xl py-5 transition"
                   style={{
                     background: `linear-gradient(135deg, ${c.green}, #0EA96B)`,
-                    boxShadow: flash === "even" ? `0 0 0 3px ${c.green}` : "0 10px 24px rgba(22,199,132,0.3)",
-                    transform: flash === "even" ? "scale(0.97)" : "scale(1)",
+                    boxShadow:
+                      flash === market.left.key ? `0 0 0 3px ${c.green}` : "0 10px 24px rgba(22,199,132,0.3)",
+                    transform: flash === market.left.key ? "scale(0.97)" : "scale(1)",
+                    opacity: tradeInFlight ? 0.6 : 1,
+                    cursor: tradeInFlight ? "not-allowed" : "pointer",
                   }}
                 >
-                  <span className="text-lg font-extrabold text-white">Even</span>
-                  <span className="text-xs font-semibold text-white/85 mt-1">95.2%</span>
+                  <span className="text-lg font-extrabold text-white">{market.left.label}</span>
+                  <span className="text-xs font-semibold text-white/85 mt-1">{market.left.hint}</span>
                   <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
                 </button>
                 <button
-                  onClick={() => handlePlaceTrade("odd")}
+                  onClick={() => handlePlaceTrade(market.right.key)}
+                  disabled={tradeInFlight}
                   className="flex flex-col items-center justify-center rounded-2xl py-5 transition"
                   style={{
                     background: `linear-gradient(135deg, ${c.red}, #D8283F)`,
-                    boxShadow: flash === "odd" ? `0 0 0 3px ${c.red}` : "0 10px 24px rgba(246,70,93,0.3)",
-                    transform: flash === "odd" ? "scale(0.97)" : "scale(1)",
+                    boxShadow:
+                      flash === market.right.key ? `0 0 0 3px ${c.red}` : "0 10px 24px rgba(246,70,93,0.3)",
+                    transform: flash === market.right.key ? "scale(0.97)" : "scale(1)",
+                    opacity: tradeInFlight ? 0.6 : 1,
+                    cursor: tradeInFlight ? "not-allowed" : "pointer",
                   }}
                 >
-                  <span className="text-lg font-extrabold text-white">Odd</span>
-                  <span className="text-xs font-semibold text-white/85 mt-1">95.2%</span>
+                  <span className="text-lg font-extrabold text-white">{market.right.label}</span>
+                  <span className="text-xs font-semibold text-white/85 mt-1">{market.right.hint}</span>
                   <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
                 </button>
               </div>
+              {tradeInFlight && (
+                <div
+                  className="flex items-center justify-center gap-2 mt-3 text-xs font-medium"
+                  style={{ color: c.textDim }}
+                >
+                  <Loader2 size={13} className="animate-spin" />
+                  Waiting for the next tick…
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -768,6 +884,48 @@ function TradingDashboard({ onLogout, onNavigate }) {
           </button>
         ))}
       </nav>
+
+      {/* ================= TRADE RESULT ALERT ================= */}
+      {resultAlert && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center px-5">
+          <div
+            className="absolute inset-0"
+            style={{ background: "rgba(0,0,0,0.6)" }}
+            onClick={() => setResultAlert(null)}
+          />
+          <div
+            className="relative w-full max-w-sm rounded-3xl border p-6 text-center"
+            style={{ background: c.surface, borderColor: c.border, boxShadow: "0 24px 60px rgba(0,0,0,0.5)" }}
+          >
+            <div
+              className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-4"
+              style={{
+                background:
+                  resultAlert.type === "win"
+                    ? c.greenDim
+                    : resultAlert.type === "loss"
+                    ? c.redDim
+                    : c.amberDim,
+              }}
+            >
+              {resultAlert.type === "win" && <PartyPopper size={26} style={{ color: c.green }} />}
+              {resultAlert.type === "loss" && <XCircle size={26} style={{ color: c.red }} />}
+              {resultAlert.type === "error" && <AlertTriangle size={26} style={{ color: c.amber }} />}
+            </div>
+            <h3 className="text-lg font-bold mb-2">{resultAlert.title}</h3>
+            <p className="text-sm mb-6" style={{ color: c.textDim }}>
+              {resultAlert.message}
+            </p>
+            <button
+              onClick={() => setResultAlert(null)}
+              className="w-full h-12 rounded-2xl text-sm font-bold"
+              style={{ background: c.amber, color: "#181205" }}
+            >
+              {resultAlert.type === "error" ? "Got it" : "Continue trading"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1266,7 +1424,7 @@ function isValidKenyanNumber(raw) {
 // ---------------------------------------------------------------------------
 // DEPOSIT — M-Pesa STK Push
 // ---------------------------------------------------------------------------
-function DepositScreen({ onBack, onComplete }) {
+function DepositScreen({ onBack, onComplete, onBalanceChange }) {
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState({});
@@ -1292,6 +1450,7 @@ function DepositScreen({ onBack, onComplete }) {
       setStage("waiting");
       const result = await pollStatus(`/api/mpesa/stkpush/status/${checkoutRequestId}`);
       if (result.status === "success") {
+        onBalanceChange?.(amt);
         setStage("success");
       } else {
         setApiError(result.resultDesc || "The deposit was not completed");
@@ -1483,7 +1642,7 @@ function DepositScreen({ onBack, onComplete }) {
 // ---------------------------------------------------------------------------
 // WITHDRAW — to M-Pesa
 // ---------------------------------------------------------------------------
-function WithdrawScreen({ onBack, onComplete, balance = 10482.5 }) {
+function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange }) {
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState({});
@@ -1496,7 +1655,8 @@ function WithdrawScreen({ onBack, onComplete, balance = 10482.5 }) {
     if (!isValidKenyanNumber(phone)) errs.phone = "Enter a valid Safaricom number";
     const amt = Number(amount);
     if (!amt || amt < 100) errs.amount = "Minimum withdrawal is KES 100";
-    else if (amt > balance) errs.amount = "Amount exceeds your available balance";
+    else if (balance <= 0) errs.amount = "Insufficient balance";
+    else if (amt > balance) errs.amount = "Insufficient balance for this amount";
     setError(errs);
     if (Object.keys(errs).length) return;
 
@@ -1509,6 +1669,7 @@ function WithdrawScreen({ onBack, onComplete, balance = 10482.5 }) {
       });
       const result = await pollStatus(`/api/mpesa/b2c/status/${conversationId}`);
       if (result.status === "success") {
+        onBalanceChange?.(-amt);
         setStage("success");
       } else {
         setApiError(result.resultDesc || "The withdrawal could not be completed");
@@ -1688,12 +1849,18 @@ function WithdrawScreen({ onBack, onComplete, balance = 10482.5 }) {
 // ---------------------------------------------------------------------------
 export default function App() {
   const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw"
+  const [balance, setBalance] = useState(10000);
+
+  const adjustBalance = (delta) =>
+    setBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
 
   if (screen === "dashboard") {
     return (
       <TradingDashboard
         onLogout={() => setScreen("auth")}
         onNavigate={(next) => setScreen(next)}
+        balance={balance}
+        onBalanceChange={adjustBalance}
       />
     );
   }
@@ -1702,6 +1869,7 @@ export default function App() {
       <DepositScreen
         onBack={() => setScreen("dashboard")}
         onComplete={() => setScreen("dashboard")}
+        onBalanceChange={adjustBalance}
       />
     );
   }
@@ -1710,6 +1878,8 @@ export default function App() {
       <WithdrawScreen
         onBack={() => setScreen("dashboard")}
         onComplete={() => setScreen("dashboard")}
+        balance={balance}
+        onBalanceChange={adjustBalance}
       />
     );
   }
