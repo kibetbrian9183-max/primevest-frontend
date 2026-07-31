@@ -140,7 +140,7 @@ function rotateDigitStats(prev) {
   return nudged.map((v) => Number(((v / sum) * 100).toFixed(1)));
 }
 
-function TradingDashboard({ onLogout, onNavigate, balance, onBalanceChange }) {
+function TradingDashboard({ onLogout, onNavigate, balance, onBalanceChange, onAddTrade }) {
   const [data, setData] = useState(() => makeInitialSeries(BASE_PRICE, 80));
   const [zoomPoints, setZoomPoints] = useState(40);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -274,6 +274,21 @@ function TradingDashboard({ onLogout, onNavigate, balance, onBalanceChange }) {
     window.setTimeout(() => {
       const resultDigit = Math.floor(Math.random() * 10);
       const won = evaluateWin(side, resultDigit);
+
+      onAddTrade?.({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        time: Date.now(),
+        market: activeTab,
+        marketLabel:
+          activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under",
+        side,
+        sideLabel: side === market.left.key ? market.left.label : market.right.label,
+        digit: selectedDigit,
+        resultDigit,
+        stake: stakeAtPlacement,
+        payout: payoutAtPlacement,
+        won,
+      });
 
       if (won) {
         onBalanceChange?.(payoutAtPlacement);
@@ -434,7 +449,7 @@ function TradingDashboard({ onLogout, onNavigate, balance, onBalanceChange }) {
                 { icon: UserCog, label: "Account Settings" },
                 { icon: Wallet, label: "Deposit", nav: "deposit" },
                 { icon: ArrowLeftRight, label: "Withdraw", nav: "withdraw" },
-                { icon: History, label: "History" },
+                { icon: History, label: "History", nav: "history" },
                 { icon: Gift, label: "Refer & Earn", highlight: true },
               ].map(({ icon: Icon, label, highlight, nav }) => (
                 <button
@@ -1845,14 +1860,173 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange }) {
 }
 
 // ---------------------------------------------------------------------------
+// TRADE HISTORY
+// ---------------------------------------------------------------------------
+function relativeTime(ts) {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+function HistoryScreen({ trades, onBack }) {
+  const [filter, setFilter] = useState("all"); // all | won | lost
+
+  const filtered = trades.filter((t) => {
+    if (filter === "won") return t.won;
+    if (filter === "lost") return !t.won;
+    return true;
+  });
+
+  const stats = trades.reduce(
+    (acc, t) => {
+      acc.staked += t.stake;
+      acc.net += t.won ? t.payout - t.stake : -t.stake;
+      if (t.won) acc.wins += 1;
+      return acc;
+    },
+    { staked: 0, net: 0, wins: 0 }
+  );
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="Trade History" onBack={onBack} />
+
+      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto">
+        {trades.length > 0 && (
+          <div className="grid grid-cols-3 gap-2.5 mb-5">
+            <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
+                TRADES
+              </div>
+              <div className="text-lg font-bold font-mono">{trades.length}</div>
+            </div>
+            <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
+                WIN RATE
+              </div>
+              <div className="text-lg font-bold font-mono">
+                {Math.round((stats.wins / trades.length) * 100)}%
+              </div>
+            </div>
+            <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
+                NET P/L
+              </div>
+              <div
+                className="text-lg font-bold font-mono"
+                style={{ color: stats.net >= 0 ? c.green : c.red }}
+              >
+                {stats.net >= 0 ? "+" : ""}
+                ${stats.net.toFixed(2)}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {trades.length > 0 && (
+          <div className="flex gap-2 mb-4">
+            {[
+              { id: "all", label: "All" },
+              { id: "won", label: "Won" },
+              { id: "lost", label: "Lost" },
+            ].map((f) => {
+              const active = filter === f.id;
+              return (
+                <button
+                  key={f.id}
+                  onClick={() => setFilter(f.id)}
+                  className="h-9 px-4 rounded-xl text-xs font-bold transition"
+                  style={{
+                    background: active ? c.amber : c.surfaceAlt,
+                    color: active ? "#181205" : c.textDim,
+                    border: `1px solid ${active ? c.amber : c.border}`,
+                  }}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {trades.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center py-20">
+            <div
+              className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
+              style={{ background: c.surfaceAlt }}
+            >
+              <History size={26} style={{ color: c.textFaint }} />
+            </div>
+            <h3 className="text-base font-bold mb-1.5">No trades yet</h3>
+            <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
+              Trades you place from the dashboard will show up here.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            {filtered.map((t) => (
+              <div
+                key={t.id}
+                className="flex items-center gap-3 rounded-2xl border p-3.5"
+                style={{ background: c.surface, borderColor: c.border }}
+              >
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: t.won ? c.greenDim : c.redDim }}
+                >
+                  {t.won ? (
+                    <ArrowUpRight size={18} style={{ color: c.green }} />
+                  ) : (
+                    <ArrowDownRight size={18} style={{ color: c.red }} />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-bold truncate">
+                      {t.marketLabel} · {t.sideLabel}
+                    </span>
+                    <span
+                      className="text-sm font-bold font-mono flex-shrink-0"
+                      style={{ color: t.won ? c.green : c.red }}
+                    >
+                      {t.won ? "+" : "-"}${t.won ? (t.payout - t.stake).toFixed(2) : t.stake.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    <span className="text-xs" style={{ color: c.textDim }}>
+                      Stake ${t.stake.toFixed(2)} · Digit {t.resultDigit}
+                    </span>
+                    <span className="text-xs flex-shrink-0" style={{ color: c.textFaint }}>
+                      {relativeTime(t.time)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App shell — routes between the auth screen and the trading dashboard
 // ---------------------------------------------------------------------------
 export default function App() {
-  const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw"
+  const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history"
   const [balance, setBalance] = useState(10000);
+  const [trades, setTrades] = useState([]);
 
   const adjustBalance = (delta) =>
     setBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
+
+  const addTrade = (entry) => setTrades((t) => [entry, ...t]);
 
   if (screen === "dashboard") {
     return (
@@ -1861,6 +2035,7 @@ export default function App() {
         onNavigate={(next) => setScreen(next)}
         balance={balance}
         onBalanceChange={adjustBalance}
+        onAddTrade={addTrade}
       />
     );
   }
@@ -1882,6 +2057,9 @@ export default function App() {
         onBalanceChange={adjustBalance}
       />
     );
+  }
+  if (screen === "history") {
+    return <HistoryScreen trades={trades} onBack={() => setScreen("dashboard")} />;
   }
   return <AuthScreen onAuthSuccess={() => setScreen("dashboard")} />;
 }
