@@ -2532,4 +2532,136 @@ function HistoryScreen({ trades, payments, onBack }) {
                       </div>
                       <div className="flex items-center justify-between gap-2 mt-0.5">
                         <span className="text-xs" style={{ color: c.textDim }}>
-                     
+                          Stake ${t.stake.toFixed(2)} · Digit {t.resultDigit}
+                        </span>
+                        <span className="text-xs flex-shrink-0" style={{ color: c.textFaint }}>
+                          {relativeTime(t.closeTime)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === "deposits" &&
+          (deposits.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-20">
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
+                style={{ background: c.surfaceAlt }}
+              >
+                <Wallet size={24} style={{ color: c.textFaint }} />
+              </div>
+              <h3 className="text-base font-bold mb-1.5">No deposits yet</h3>
+              <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
+                Successful M-Pesa deposits will show up here.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {deposits.map((p) => (
+                <PaymentRow key={p.id} p={p} />
+              ))}
+            </div>
+          ))}
+
+        {tab === "withdrawals" &&
+          (withdrawals.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-20">
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
+                style={{ background: c.surfaceAlt }}
+              >
+                <ArrowLeftRight size={24} style={{ color: c.textFaint }} />
+              </div>
+              <h3 className="text-base font-bold mb-1.5">No withdrawals yet</h3>
+              <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
+                Submitted withdrawal requests will show up here.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {withdrawals.map((p) => (
+                <PaymentRow key={p.id} p={p} />
+              ))}
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App shell — routes between the auth screen and the trading dashboard
+// ---------------------------------------------------------------------------
+export default function App() {
+  const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history"
+  const [balance, setBalance] = useState(10000);
+  const [trades, setTrades] = useState([]);
+  const [payments, setPayments] = useState([]); // deposit + withdrawal history
+  const [user, setUser] = useState(null); // { name, email }
+
+  const adjustBalance = (delta) =>
+    setBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
+
+  const addTrade = (entry) => setTrades((t) => [entry, ...t]);
+  const resolveTrade = (id, patch) =>
+    setTrades((list) => list.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  const addPayment = (entry) => setPayments((p) => [entry, ...p]);
+
+  if (screen === "dashboard") {
+    return (
+      <TradingDashboard
+        onLogout={() => setScreen("auth")}
+        onNavigate={(next) => setScreen(next)}
+        balance={balance}
+        onBalanceChange={adjustBalance}
+        trades={trades}
+        onAddTrade={addTrade}
+        onResolveTrade={resolveTrade}
+        user={user}
+      />
+    );
+  }
+  if (screen === "deposit") {
+    return (
+      <DepositScreen
+        onBack={() => setScreen("dashboard")}
+        onComplete={() => setScreen("dashboard")}
+        onBalanceChange={adjustBalance}
+        onAddPayment={addPayment}
+      />
+    );
+  }
+  if (screen === "withdraw") {
+    return (
+      <WithdrawScreen
+        onBack={() => setScreen("dashboard")}
+        onComplete={() => setScreen("dashboard")}
+        balance={balance}
+        onBalanceChange={adjustBalance}
+        onAddPayment={addPayment}
+      />
+    );
+  }
+  if (screen === "history") {
+    return (
+      <HistoryScreen
+        trades={trades.filter((t) => t.status === "won" || t.status === "lost")}
+        payments={payments}
+        onBack={() => setScreen("dashboard")}
+      />
+    );
+  }
+  return (
+    <AuthScreen
+      onAuthSuccess={(u) => {
+        setUser(u);
+        setScreen("dashboard");
+      }}
+    />
+  );
+}
