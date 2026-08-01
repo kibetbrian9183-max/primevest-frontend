@@ -48,6 +48,9 @@ import {
   XCircle,
   AlertTriangle,
   Square,
+  Heart,
+  Clock,
+  DollarSign,
 } from "lucide-react";
 
 
@@ -146,6 +149,66 @@ function rotateDigitStats(prev) {
   const nudged = prev.map((v) => Math.max(2, v + (Math.random() - 0.5) * 3.2));
   const sum = nudged.reduce((a, b) => a + b, 0);
   return nudged.map((v) => Number(((v / sum) * 100).toFixed(1)));
+}
+
+// ---------------------------------------------------------------------------
+// Local account persistence.
+//
+// This runs entirely in the browser via localStorage/sessionStorage — there
+// is no backend user database yet. It's enough to survive refreshes and
+// logout/login on the SAME device/browser, but it will not sync a user's
+// data across different devices or browsers. A real "does this user exist"
+// check that works everywhere needs a backend database (e.g. extending the
+// Daraja server with a users table) — see the note in chat.
+// ---------------------------------------------------------------------------
+const USERS_KEY = "primevest_users_v1";
+const SESSION_KEY = "primevest_session_v1";
+
+function loadUsers() {
+  try {
+    return JSON.parse(localStorage.getItem(USERS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveUsers(users) {
+  try {
+    localStorage.setItem(USERS_KEY, JSON.stringify(users));
+  } catch {
+    // localStorage unavailable (e.g. private browsing) — data just won't persist.
+  }
+}
+
+function getSessionEmail() {
+  try {
+    return localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function setSessionEmail(email, remember) {
+  try {
+    if (remember) {
+      localStorage.setItem(SESSION_KEY, email);
+      sessionStorage.removeItem(SESSION_KEY);
+    } else {
+      sessionStorage.setItem(SESSION_KEY, email);
+      localStorage.removeItem(SESSION_KEY);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 function maskEmail(email) {
@@ -392,6 +455,10 @@ function TradingDashboard({
   onLogout,
   onNavigate,
   balance,
+  demoBalance,
+  realBalance,
+  accountType,
+  onSwitchAccount,
   onBalanceChange,
   trades,
   onAddTrade,
@@ -698,23 +765,66 @@ function TradingDashboard({
           {/* Balance dropdown */}
           <div className="relative">
             <button
-              onClick={() => setBalanceMenuOpen((v) => !v)}
+              onClick={() => !autoRunning && setBalanceMenuOpen((v) => !v)}
+              disabled={autoRunning}
               className="flex items-center gap-1.5 h-10 px-3 rounded-xl border text-sm font-semibold font-mono"
-              style={{ background: c.surfaceAlt, borderColor: c.border, color: c.text }}
+              style={{
+                background: c.surfaceAlt,
+                borderColor: c.border,
+                color: c.text,
+                opacity: autoRunning ? 0.6 : 1,
+                cursor: autoRunning ? "not-allowed" : "pointer",
+              }}
             >
+              <span
+                className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                style={{
+                  background: accountType === "demo" ? c.amberDim : c.greenDim,
+                  color: accountType === "demo" ? c.amber : c.green,
+                }}
+              >
+                {accountType === "demo" ? "DEMO" : "REAL"}
+              </span>
               ${balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
               <ChevronDown size={15} style={{ color: c.textDim }} />
             </button>
             {balanceMenuOpen && (
               <div
-                className="absolute right-0 mt-2 w-44 rounded-xl border overflow-hidden shadow-2xl"
+                className="absolute right-0 mt-2 w-48 rounded-xl border overflow-hidden shadow-2xl z-20"
                 style={{ background: c.elevated, borderColor: c.border }}
               >
-                <button className="w-full text-left px-4 py-3 text-sm hover:bg-white/5" style={{ color: c.text }}>
-                  Demo account
-                  <div className="text-xs font-mono" style={{ color: c.textDim }}>
-                    ${balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </div>
+                <button
+                  onClick={() => {
+                    onSwitchAccount?.("demo");
+                    setBalanceMenuOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between text-left px-4 py-3 text-sm hover:bg-white/5"
+                  style={{ color: c.text, background: accountType === "demo" ? c.amberDim : "transparent" }}
+                >
+                  <span>
+                    Demo account
+                    <div className="text-xs font-mono" style={{ color: c.textDim }}>
+                      ${demoBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </div>
+                  </span>
+                  {accountType === "demo" && <Check size={14} style={{ color: c.amber }} />}
+                </button>
+                <div style={{ borderTop: `1px solid ${c.border}` }} />
+                <button
+                  onClick={() => {
+                    onSwitchAccount?.("real");
+                    setBalanceMenuOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between text-left px-4 py-3 text-sm hover:bg-white/5"
+                  style={{ color: c.text, background: accountType === "real" ? c.greenDim : "transparent" }}
+                >
+                  <span>
+                    Real account
+                    <div className="text-xs font-mono" style={{ color: c.textDim }}>
+                      ${realBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </div>
+                  </span>
+                  {accountType === "real" && <Check size={14} style={{ color: c.green }} />}
                 </button>
               </div>
             )}
@@ -860,10 +970,14 @@ function TradingDashboard({
                 { icon: HelpCircle, label: "Help Centre" },
                 { icon: Shield, label: "Security" },
                 { icon: MessageCircle, label: "Live Chat" },
-                { icon: Info, label: "About PrimeVest" },
-              ].map(({ icon: Icon, label }) => (
+                { icon: Info, label: "About PrimeVest", nav: "about" },
+              ].map(({ icon: Icon, label, nav }) => (
                 <button
                   key={label}
+                  onClick={() => {
+                    if (nav) onNavigate?.(nav);
+                    else setSidebarOpen(false);
+                  }}
                   className="w-full flex items-center gap-4 px-5 py-4 text-sm hover:bg-white/5"
                   style={{ color: c.text }}
                 >
@@ -1469,7 +1583,7 @@ function Field({ icon: Icon, error, children }) {
   );
 }
 
-function AuthScreen({ onAuthSuccess }) {
+function AuthScreen({ onAuth, authError, clearAuthError }) {
   const [mode, setMode] = useState("login"); // "login" | "signup"
   const [showPw, setShowPw] = useState(false);
   const [showPw2, setShowPw2] = useState(false);
@@ -1498,6 +1612,7 @@ function AuthScreen({ onAuthSuccess }) {
     setErrors({});
     setShowPw(false);
     setShowPw2(false);
+    clearAuthError?.();
   }
 
   function validate() {
@@ -1522,8 +1637,8 @@ function AuthScreen({ onAuthSuccess }) {
     setSubmitting(true);
     window.setTimeout(() => {
       setSubmitting(false);
-      onAuthSuccess?.({ name: form.name, email: form.email });
-    }, 1200);
+      onAuth?.({ mode, name: form.name, email: form.email, remember });
+    }, 800);
   }
 
   const inputStyle = {
@@ -1665,6 +1780,15 @@ function AuthScreen({ onAuthSuccess }) {
                 : "Takes under a minute. No card required."}
             </p>
           </div>
+
+          {authError && (
+            <div
+              className="mb-4 rounded-xl px-4 py-3 text-sm font-medium"
+              style={{ background: c.redDim, color: c.red }}
+            >
+              {authError}
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             {mode === "signup" && (
@@ -1872,12 +1996,23 @@ function MoneyHeader({ title, onBack }) {
   );
 }
 
-const QUICK_AMOUNTS = [500, 1000, 2500, 5000, 10000];
+const KES_QUICK_AMOUNTS = [500, 1000, 2500, 5000, 10000];
+const USD_QUICK_AMOUNTS = [5, 10, 25, 50, 100, 200];
 
-function AmountChips({ value, onPick }) {
+// Fixed approximate rate — not a live feed. For accurate pricing this
+// should come from a live FX rate source or your own configured rate.
+const USD_KES_RATE = 129;
+function kesToUsd(kes) {
+  return Number((kes / USD_KES_RATE).toFixed(2));
+}
+function usdToKes(usd) {
+  return Math.round(usd * USD_KES_RATE);
+}
+
+function AmountChips({ value, onPick, tiers, formatLabel }) {
   return (
     <div className="flex flex-wrap gap-2">
-      {QUICK_AMOUNTS.map((amt) => (
+      {tiers.map((amt) => (
         <button
           key={amt}
           type="button"
@@ -1889,25 +2024,26 @@ function AmountChips({ value, onPick }) {
             border: `1px solid ${String(value) === String(amt) ? c.amber : c.border}`,
           }}
         >
-          KES {amt.toLocaleString()}
+          {formatLabel(amt)}
         </button>
       ))}
     </div>
   );
 }
 
-// Normalizes/validates a Kenyan mobile number for display purposes only.
-function formatKenyanNumber(raw) {
-  const digits = raw.replace(/\D/g, "");
-  if (digits.startsWith("254")) return "+" + digits;
-  if (digits.startsWith("0")) return "+254" + digits.slice(1);
-  if (digits.length > 0) return "+254" + digits;
-  return "";
+// Converts any of 07XXXXXXXX / 01XXXXXXXX / +254XXXXXXXXX / 254XXXXXXXXX
+// into the exact "254XXXXXXXXX" format Daraja requires — no plus sign,
+// no spaces, no leading zero.
+function toMsisdn254(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  let n = digits;
+  if (n.startsWith("0")) n = "254" + n.slice(1);
+  else if (n.startsWith("7") || n.startsWith("1")) n = "254" + n;
+  return n.slice(0, 12);
 }
 
 function isValidKenyanNumber(raw) {
-  const digits = raw.replace(/\D/g, "");
-  return /^(?:254|0)?7\d{8}$/.test(digits) || /^(?:254|0)?1\d{8}$/.test(digits);
+  return /^254(7|1)\d{8}$/.test(toMsisdn254(raw));
 }
 
 // ---------------------------------------------------------------------------
@@ -1929,22 +2065,27 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
     setError(errs);
     if (Object.keys(errs).length) return;
 
+    const msisdn = toMsisdn254(phone);
+    setPhone(msisdn);
+
     setApiError("");
     setStage("pushed");
     try {
       const { checkoutRequestId } = await mpesaApi("/api/mpesa/stkpush", {
         method: "POST",
-        body: JSON.stringify({ phone, amount: amt, accountRef: "PrimeVest" }),
+        body: JSON.stringify({ phone: msisdn, amount: amt, accountRef: "PrimeVest" }),
       });
       setStage("waiting");
       const result = await pollStatus(`/api/mpesa/stkpush/status/${checkoutRequestId}`);
       if (result.status === "success") {
-        onBalanceChange?.(amt);
+        const usdCredit = kesToUsd(amt);
+        onBalanceChange?.(usdCredit);
         onAddPayment?.({
           id: checkoutRequestId,
           type: "deposit",
           amount: amt,
-          phone: formatKenyanNumber(phone),
+          usdAmount: usdCredit,
+          phone: msisdn,
           status: "success",
           time: Date.now(),
         });
@@ -1958,6 +2099,8 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
       setStage("failed");
     }
   }
+
+  const usdEquivalent = amount ? kesToUsd(Number(amount)) : 0;
 
   if (stage === "failed") {
     return (
@@ -2000,12 +2143,12 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
           </h2>
           <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
             {stage === "pushed" ? (
-              <>Sending a prompt to <span style={{ color: c.text }}>{formatKenyanNumber(phone)}</span>…</>
+              <>Sending a prompt to <span style={{ color: c.text }}>{phone}</span>…</>
             ) : (
               <>
                 Enter your M-Pesa PIN on the prompt sent to{" "}
                 <span className="font-semibold" style={{ color: c.text }}>
-                  {formatKenyanNumber(phone)}
+                  {phone}
                 </span>{" "}
                 to complete depositing{" "}
                 <span className="font-semibold" style={{ color: c.text }}>
@@ -2033,8 +2176,11 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
           </div>
           <h2 className="text-lg font-bold mb-2">Deposit successful</h2>
           <p className="text-sm max-w-xs mb-8" style={{ color: c.textDim }}>
-            KES {Number(amount).toLocaleString()} has been added to your PrimeVest balance from{" "}
-            {formatKenyanNumber(phone)}.
+            KES {Number(amount).toLocaleString()} from {phone} converted to{" "}
+            <span className="font-semibold" style={{ color: c.text }}>
+              ${usdEquivalent.toFixed(2)}
+            </span>{" "}
+            and added to your Real account balance.
           </p>
           <button
             onClick={onComplete}
@@ -2066,7 +2212,7 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
             <div>
               <div className="text-sm font-bold">M-Pesa STK Push</div>
               <div className="text-xs" style={{ color: c.textDim }}>
-                You'll get a prompt on your phone to enter your PIN
+                Converts to USD and adds to your Real account
               </div>
             </div>
           </div>
@@ -2082,6 +2228,7 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
                   setPhone(e.target.value);
                   setError((er) => ({ ...er, phone: undefined }));
                 }}
+                onBlur={() => setPhone((p) => (p ? toMsisdn254(p) : p))}
                 placeholder="07XX XXX XXX"
                 inputMode="tel"
                 className="flex-1 outline-none text-sm bg-transparent"
@@ -2095,7 +2242,7 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
               Amount (KES)
             </label>
             <div
-              className="flex items-center gap-2 h-13 rounded-2xl border px-4 mb-3"
+              className="flex items-center gap-2 h-13 rounded-2xl border px-4 mb-1.5"
               style={{ height: 52, background: c.bg, borderColor: error.amount ? c.red : c.borderStrong }}
             >
               <span className="text-sm font-bold" style={{ color: c.textDim }}>KES</span>
@@ -2111,10 +2258,20 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
                 style={{ color: c.text }}
               />
             </div>
+            {amount && !error.amount && (
+              <div className="text-xs font-mono mb-3" style={{ color: c.textFaint }}>
+                ≈ ${usdEquivalent.toFixed(2)} added to your Real account
+              </div>
+            )}
             {error.amount && (
               <div className="text-xs font-medium mb-3" style={{ color: c.red }}>{error.amount}</div>
             )}
-            <AmountChips value={amount} onPick={(a) => setAmount(String(a))} />
+            <AmountChips
+              value={amount}
+              onPick={(a) => setAmount(String(a))}
+              tiers={KES_QUICK_AMOUNTS}
+              formatLabel={(a) => `KES ${a.toLocaleString()}`}
+            />
           </div>
 
           <button
@@ -2151,11 +2308,14 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
     const errs = {};
     if (!isValidKenyanNumber(phone)) errs.phone = "Enter a valid Safaricom number";
     const amt = Number(amount);
-    if (!amt || amt < 100) errs.amount = "Minimum withdrawal is KES 100";
+    if (!amt || amt < 1) errs.amount = "Minimum withdrawal is $1";
     else if (balance <= 0) errs.amount = "Insufficient balance";
     else if (amt > balance) errs.amount = "Insufficient balance for this amount";
     setError(errs);
     if (Object.keys(errs).length) return;
+
+    const msisdn = toMsisdn254(phone);
+    setPhone(msisdn);
 
     setStage("processing");
 
@@ -2163,19 +2323,23 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
     // request for manual disbursement instead of calling Safaricom.
     window.setTimeout(() => {
       const ref = `WD-${Date.now().toString(36).toUpperCase()}`;
+      const kesAmount = usdToKes(amt);
       setReference(ref);
       onBalanceChange?.(-amt);
       onAddPayment?.({
         id: ref,
         type: "withdrawal",
-        amount: amt,
-        phone: formatKenyanNumber(phone),
+        amount: kesAmount,
+        usdAmount: amt,
+        phone: msisdn,
         status: "pending",
         time: Date.now(),
       });
       setStage("success");
     }, 1200);
   }
+
+  const kesEquivalent = amount ? usdToKes(Number(amount)) : 0;
 
   if (stage === "processing") {
     return (
@@ -2190,8 +2354,8 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
           </div>
           <h2 className="text-lg font-bold mb-2">Submitting your request…</h2>
           <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
-            KES {Number(amount).toLocaleString()} to{" "}
-            <span style={{ color: c.text }}>{formatKenyanNumber(phone)}</span>
+            ${Number(amount).toFixed(2)} (KES {kesEquivalent.toLocaleString()}) to{" "}
+            <span style={{ color: c.text }}>{phone}</span>
           </p>
         </div>
       </div>
@@ -2211,8 +2375,12 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
           </div>
           <h2 className="text-lg font-bold mb-2">Withdrawal submitted successfully</h2>
           <p className="text-sm max-w-xs mb-2" style={{ color: c.textDim }}>
-            Your request to withdraw KES {Number(amount).toLocaleString()} to {formatKenyanNumber(phone)}{" "}
-            has been received. Our team will process this manually and disburse the funds shortly.
+            Your request to withdraw ${Number(amount).toFixed(2)} (converted to{" "}
+            <span className="font-semibold" style={{ color: c.text }}>
+              KES {kesEquivalent.toLocaleString()}
+            </span>
+            ) to {phone} has been received. Our team will process this manually and disburse the funds
+            shortly.
           </p>
           <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>
             Reference: {reference}
@@ -2239,10 +2407,10 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
             style={{ background: c.surface, borderColor: c.border }}
           >
             <div className="text-xs font-semibold mb-1" style={{ color: c.textDim }}>
-              Available balance
+              Real account balance
             </div>
             <div className="text-2xl font-bold font-mono">
-              KES {balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              ${balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
             </div>
           </div>
 
@@ -2257,6 +2425,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
                   setPhone(e.target.value);
                   setError((er) => ({ ...er, phone: undefined }));
                 }}
+                onBlur={() => setPhone((p) => (p ? toMsisdn254(p) : p))}
                 placeholder="07XX XXX XXX"
                 inputMode="tel"
                 className="flex-1 outline-none text-sm bg-transparent"
@@ -2267,37 +2436,47 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
 
           <div>
             <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
-              Amount (KES)
+              Amount (USD)
             </label>
             <div
-              className="flex items-center gap-2 h-13 rounded-2xl border px-4 mb-3"
+              className="flex items-center gap-2 h-13 rounded-2xl border px-4 mb-1.5"
               style={{ height: 52, background: c.bg, borderColor: error.amount ? c.red : c.borderStrong }}
             >
-              <span className="text-sm font-bold" style={{ color: c.textDim }}>KES</span>
+              <span className="text-sm font-bold" style={{ color: c.textDim }}>$</span>
               <input
                 value={amount}
                 onChange={(e) => {
-                  setAmount(e.target.value.replace(/[^\d]/g, ""));
+                  setAmount(e.target.value.replace(/[^0-9.]/g, ""));
                   setError((er) => ({ ...er, amount: undefined }));
                 }}
                 placeholder="0"
-                inputMode="numeric"
+                inputMode="decimal"
                 className="flex-1 outline-none text-sm bg-transparent font-semibold"
                 style={{ color: c.text }}
               />
               <button
                 type="button"
-                onClick={() => setAmount(String(Math.floor(balance)))}
+                onClick={() => setAmount(String(balance.toFixed(2)))}
                 className="text-xs font-bold flex-shrink-0"
                 style={{ color: c.amber }}
               >
                 MAX
               </button>
             </div>
+            {amount && !error.amount && (
+              <div className="text-xs font-mono mb-3" style={{ color: c.textFaint }}>
+                ≈ KES {kesEquivalent.toLocaleString()} disbursed via M-Pesa
+              </div>
+            )}
             {error.amount && (
               <div className="text-xs font-medium mb-3" style={{ color: c.red }}>{error.amount}</div>
             )}
-            <AmountChips value={amount} onPick={(a) => setAmount(String(a))} />
+            <AmountChips
+              value={amount}
+              onPick={(a) => setAmount(String(a))}
+              tiers={USD_QUICK_AMOUNTS}
+              formatLabel={(a) => `$${a}`}
+            />
           </div>
 
           <button
@@ -2367,7 +2546,8 @@ function PaymentRow({ p }) {
           <span className="text-xs" style={{ color: c.textDim }}>
             {p.phone} {pending && "· Pending"}
           </span>
-          <span className="text-xs flex-shrink-0" style={{ color: c.textFaint }}>
+          <span className="text-xs flex-shrink-0 font-mono" style={{ color: c.textFaint }}>
+            {p.usdAmount != null ? `≈ $${p.usdAmount.toFixed(2)} · ` : ""}
             {relativeTime(p.time)}
           </span>
         </div>
@@ -2595,30 +2775,239 @@ function HistoryScreen({ trades, payments, onBack }) {
 }
 
 // ---------------------------------------------------------------------------
+// ABOUT / RESPONSIBLE TRADING
+// ---------------------------------------------------------------------------
+function AboutScreen({ onBack }) {
+  const guidelines = [
+    {
+      icon: DollarSign,
+      color: c.green,
+      bg: c.greenDim,
+      title: "Set a Budget",
+      body: "Only trade with money you can afford to lose. Never use funds needed for essential expenses.",
+    },
+    {
+      icon: Clock,
+      color: "#5B8DEF",
+      bg: "rgba(91,141,239,0.14)",
+      title: "Take Breaks",
+      body: "Set time limits for your trading sessions. Regular breaks help maintain focus and clear thinking.",
+    },
+    {
+      icon: AlertTriangle,
+      color: c.amber,
+      bg: c.amberDim,
+      title: "Know the Risks",
+      body: "Trading involves real risk of loss. Past performance never guarantees future results.",
+    },
+    {
+      icon: Heart,
+      color: c.red,
+      bg: c.redDim,
+      title: "Emotional Control",
+      body: "Don't trade when upset, tired, or under the influence. Emotional trading leads to poor decisions.",
+    },
+  ];
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="About PrimeVest" onBack={onBack} />
+
+      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto flex flex-col gap-4">
+        {/* Company blurb */}
+        <div className="rounded-3xl border p-6" style={{ background: c.surface, borderColor: c.border }}>
+          <div className="flex items-center gap-2.5 mb-4">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center font-bold"
+              style={{ background: c.amber, color: "#181205" }}
+            >
+              P
+            </div>
+            <span className="text-base font-bold">Our story</span>
+          </div>
+          <p className="text-sm leading-relaxed mb-3" style={{ color: c.textDim }}>
+            PrimeVest was built to make trading synthetic volatility indices simple and
+            accessible, with deposits and withdrawals that work the way our users already
+            move money day to day — straight from M-Pesa, without extra steps.
+          </p>
+          <p className="text-sm leading-relaxed" style={{ color: c.textDim }}>
+            We're a small, product-led team focused on a fast, uncluttered trading
+            experience: clear pricing, instant deposits, and a support team that actually
+            responds. We're still early — if something feels off, we want to hear about
+            it through Live Chat or Help Centre.
+          </p>
+        </div>
+
+        {/* Responsible trading hero */}
+        <div
+          className="rounded-3xl border p-6 flex flex-col items-center text-center"
+          style={{ background: c.surface, borderColor: c.border }}
+        >
+          <div
+            className="w-16 h-16 rounded-full flex items-center justify-center mb-4"
+            style={{ background: "rgba(45,212,191,0.16)" }}
+          >
+            <Heart size={26} style={{ color: "#2DD4BF" }} />
+          </div>
+          <h2 className="text-xl font-bold mb-2">Trade Responsibly</h2>
+          <p className="text-sm max-w-sm" style={{ color: c.textDim }}>
+            At PrimeVest, we care about your well-being. Trading should be enjoyable and
+            within your means. Here are some guidelines to help you trade responsibly.
+          </p>
+        </div>
+
+        {guidelines.map((g) => (
+          <div
+            key={g.title}
+            className="rounded-3xl border p-5"
+            style={{ background: c.surface, borderColor: c.border }}
+          >
+            <div
+              className="w-11 h-11 rounded-xl flex items-center justify-center mb-4"
+              style={{ background: g.bg }}
+            >
+              <g.icon size={20} style={{ color: g.color }} />
+            </div>
+            <h3 className="text-base font-bold mb-1.5">{g.title}</h3>
+            <p className="text-sm leading-relaxed" style={{ color: c.textDim }}>{g.body}</p>
+          </div>
+        ))}
+
+        <p className="text-xs text-center px-4 py-2" style={{ color: c.textFaint }}>
+          If trading is affecting your finances, relationships, or wellbeing, please reach
+          out to a local support service or talk to someone you trust.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App shell — routes between the auth screen and the trading dashboard
 // ---------------------------------------------------------------------------
 export default function App() {
-  const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history"
-  const [balance, setBalance] = useState(10000);
+  const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history" | "about"
+  const [booting, setBooting] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [user, setUser] = useState(null); // { name, email }
+  const [accountType, setAccountType] = useState("demo"); // "demo" | "real"
+  const [demoBalance, setDemoBalance] = useState(10000);
+  const [realBalance, setRealBalance] = useState(0);
   const [trades, setTrades] = useState([]);
   const [payments, setPayments] = useState([]); // deposit + withdrawal history
-  const [user, setUser] = useState(null); // { name, email }
 
-  const adjustBalance = (delta) =>
-    setBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
+  // Restore a saved session (if any) once, on first load.
+  useEffect(() => {
+    const email = getSessionEmail();
+    if (email) {
+      const users = loadUsers();
+      const rec = users[email.toLowerCase()];
+      if (rec) {
+        setUser({ name: rec.name, email: rec.email });
+        setDemoBalance(rec.demoBalance ?? 10000);
+        setRealBalance(rec.realBalance ?? 0);
+        setTrades(rec.trades ?? []);
+        setPayments(rec.payments ?? []);
+        setScreen("dashboard");
+      }
+    }
+    setBooting(false);
+  }, []);
+
+  // Keep the logged-in user's record up to date so nothing is lost on
+  // logout/refresh — this is the localStorage persistence described above.
+  useEffect(() => {
+    if (booting || !user?.email) return;
+    const users = loadUsers();
+    const key = user.email.toLowerCase();
+    users[key] = {
+      ...(users[key] || {}),
+      name: user.name || users[key]?.name || "",
+      email: user.email,
+      demoBalance,
+      realBalance,
+      trades,
+      payments,
+    };
+    saveUsers(users);
+  }, [booting, user, demoBalance, realBalance, trades, payments]);
+
+  const adjustDemo = (delta) =>
+    setDemoBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
+  const adjustReal = (delta) =>
+    setRealBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
+  const adjustActive = (delta) => (accountType === "demo" ? adjustDemo(delta) : adjustReal(delta));
 
   const addTrade = (entry) => setTrades((t) => [entry, ...t]);
   const resolveTrade = (id, patch) =>
     setTrades((list) => list.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   const addPayment = (entry) => setPayments((p) => [entry, ...p]);
 
+  function handleAuth({ mode, name, email, remember }) {
+    const users = loadUsers();
+    const key = email.trim().toLowerCase();
+    const existing = users[key];
+
+    if (mode === "signup") {
+      if (existing) {
+        setAuthError("An account with this email already exists — try logging in instead.");
+        return;
+      }
+      const rec = { name, email, demoBalance: 10000, realBalance: 0, trades: [], payments: [] };
+      users[key] = rec;
+      saveUsers(users);
+      setAuthError("");
+      setUser({ name, email });
+      setAccountType("demo");
+      setDemoBalance(10000);
+      setRealBalance(0);
+      setTrades([]);
+      setPayments([]);
+      setSessionEmail(email, true);
+      setScreen("dashboard");
+    } else {
+      if (!existing) {
+        setAuthError("No account found with that email — create one first.");
+        return;
+      }
+      setAuthError("");
+      setUser({ name: existing.name, email: existing.email });
+      setAccountType("demo");
+      setDemoBalance(existing.demoBalance ?? 10000);
+      setRealBalance(existing.realBalance ?? 0);
+      setTrades(existing.trades ?? []);
+      setPayments(existing.payments ?? []);
+      setSessionEmail(email, remember);
+      setScreen("dashboard");
+    }
+  }
+
+  function handleLogout() {
+    clearSession();
+    setUser(null);
+    setAccountType("demo");
+    setDemoBalance(10000);
+    setRealBalance(0);
+    setTrades([]);
+    setPayments([]);
+    setScreen("auth");
+  }
+
+  if (booting) return null;
+
+  const balance = accountType === "demo" ? demoBalance : realBalance;
+
   if (screen === "dashboard") {
     return (
       <TradingDashboard
-        onLogout={() => setScreen("auth")}
+        onLogout={handleLogout}
         onNavigate={(next) => setScreen(next)}
         balance={balance}
-        onBalanceChange={adjustBalance}
+        demoBalance={demoBalance}
+        realBalance={realBalance}
+        accountType={accountType}
+        onSwitchAccount={setAccountType}
+        onBalanceChange={adjustActive}
         trades={trades}
         onAddTrade={addTrade}
         onResolveTrade={resolveTrade}
@@ -2631,7 +3020,7 @@ export default function App() {
       <DepositScreen
         onBack={() => setScreen("dashboard")}
         onComplete={() => setScreen("dashboard")}
-        onBalanceChange={adjustBalance}
+        onBalanceChange={adjustReal}
         onAddPayment={addPayment}
       />
     );
@@ -2641,8 +3030,8 @@ export default function App() {
       <WithdrawScreen
         onBack={() => setScreen("dashboard")}
         onComplete={() => setScreen("dashboard")}
-        balance={balance}
-        onBalanceChange={adjustBalance}
+        balance={realBalance}
+        onBalanceChange={adjustReal}
         onAddPayment={addPayment}
       />
     );
@@ -2656,12 +3045,14 @@ export default function App() {
       />
     );
   }
+  if (screen === "about") {
+    return <AboutScreen onBack={() => setScreen("dashboard")} />;
+  }
   return (
     <AuthScreen
-      onAuthSuccess={(u) => {
-        setUser(u);
-        setScreen("dashboard");
-      }}
+      onAuth={handleAuth}
+      authError={authError}
+      clearAuthError={() => setAuthError("")}
     />
   );
 }
