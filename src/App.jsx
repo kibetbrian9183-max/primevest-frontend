@@ -54,6 +54,7 @@ import {
   Send,
   Image as ImageIcon,
   UserCheck,
+  RefreshCw,
 } from "lucide-react";
 
 
@@ -2040,7 +2041,7 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
 // ---------------------------------------------------------------------------
 // Shared "money" screen chrome — back header used by Deposit & Withdraw
 // ---------------------------------------------------------------------------
-function MoneyHeader({ title, onBack }) {
+function MoneyHeader({ title, onBack, onRefresh, refreshing }) {
   return (
     <div
       className="sticky top-0 z-10 flex items-center gap-3 h-16 px-4 sm:px-6 border-b"
@@ -2054,7 +2055,18 @@ function MoneyHeader({ title, onBack }) {
       >
         <ArrowLeft size={17} style={{ color: c.text }} />
       </button>
-      <span className="text-base font-bold">{title}</span>
+      <span className="text-base font-bold flex-1">{title}</span>
+      {onRefresh && (
+        <button
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="flex items-center justify-center w-9 h-9 rounded-xl border flex-shrink-0"
+          style={{ background: c.surfaceAlt, borderColor: c.border, opacity: refreshing ? 0.6 : 1 }}
+          aria-label="Refresh"
+        >
+          <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} style={{ color: c.text }} />
+        </button>
+      )}
     </div>
   );
 }
@@ -2612,6 +2624,13 @@ function relativeTime(ts) {
 function PaymentRow({ p }) {
   const isDeposit = p.type === "deposit";
   const pending = p.status === "pending";
+  const rejected = p.status === "rejected";
+  const failed = p.status === "failed";
+  const completed = p.status === "completed" || p.status === "success";
+
+  const statusLabel = pending ? "Pending" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
+  const statusColor = pending ? c.amber : rejected || failed ? c.red : c.green;
+
   return (
     <div
       className="flex items-center gap-3 rounded-2xl border p-3.5"
@@ -2619,7 +2638,7 @@ function PaymentRow({ p }) {
     >
       <div
         className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: pending ? c.amberDim : isDeposit ? c.greenDim : c.redDim }}
+        style={{ background: pending ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
       >
         {isDeposit ? (
           <ArrowDownRight size={18} style={{ color: c.green }} />
@@ -2640,8 +2659,13 @@ function PaymentRow({ p }) {
           </span>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
-          <span className="text-xs" style={{ color: c.textDim }}>
-            {p.phone} {pending && "· Pending"}
+          <span className="text-xs flex items-center gap-1.5" style={{ color: c.textDim }}>
+            {p.phone}
+            {statusLabel && (
+              <span className="font-semibold" style={{ color: statusColor }}>
+                · {statusLabel}
+              </span>
+            )}
           </span>
           <span className="text-xs flex-shrink-0 font-mono" style={{ color: c.textFaint }}>
             {p.usdAmount != null ? `≈ $${p.usdAmount.toFixed(2)} · ` : ""}
@@ -2653,9 +2677,19 @@ function PaymentRow({ p }) {
   );
 }
 
-function HistoryScreen({ trades, payments, onBack }) {
+function HistoryScreen({ trades, payments, onBack, onRefresh }) {
   const [tab, setTab] = useState("trades"); // trades | deposits | withdrawals
   const [filter, setFilter] = useState("all"); // all | won | lost
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await onRefresh?.();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const filtered = trades.filter((t) => {
     if (filter === "won") return t.won;
@@ -2678,7 +2712,7 @@ function HistoryScreen({ trades, payments, onBack }) {
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <MoneyHeader title="History" onBack={onBack} />
+      <MoneyHeader title="History" onBack={onBack} onRefresh={handleRefresh} refreshing={refreshing} />
 
       <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto">
         <div className="flex gap-2 mb-5">
@@ -3755,6 +3789,12 @@ export default function App() {
         trades={trades.filter((t) => t.status === "won" || t.status === "lost")}
         payments={payments}
         onBack={() => setScreen("dashboard")}
+        onRefresh={async () => {
+          const { trades: rawTrades } = await backendApi("/api/trades");
+          setTrades(rawTrades.map(transformTrade));
+          const { payments: rawPayments } = await backendApi("/api/payments");
+          setPayments(rawPayments.map(transformPayment));
+        }}
       />
     );
   }
