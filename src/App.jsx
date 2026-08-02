@@ -80,19 +80,36 @@ const c = {
 };
 
 // ---------------------------------------------------------------------------
-// Backend wiring — points at the deployed Daraja server.
-// Set these two values for your deployment (or read them from your
-// bundler's env vars, e.g. import.meta.env.VITE_API_BASE_URL).
+// Backend wiring — points at the deployed PrimeVest backend. This backend
+// is the source of truth for accounts, balances, trades, and payments —
+// nothing durable lives only in the browser anymore.
 // ---------------------------------------------------------------------------
-const API_BASE_URL = "https://YOUR-RENDER-URL.onrender.com";
-const API_KEY = "YOUR_FRONTEND_API_KEY"; // must match FRONTEND_API_KEY on the server
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const TOKEN_KEY = "primevest_token_v1";
 
-async function mpesaApi(path, options = {}) {
+function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+function setToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore — session just won't survive a refresh
+  }
+}
+
+async function backendApi(path, options = {}) {
+  const token = getToken();
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": API_KEY,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
@@ -107,11 +124,44 @@ async function mpesaApi(path, options = {}) {
 async function pollStatus(path, { intervalMs = 2500, timeoutMs = 90000 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const data = await mpesaApi(path);
+    const data = await backendApi(path);
     if (data.status === "success" || data.status === "failed") return data;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error("Timed out waiting for confirmation");
+}
+
+// Shapes a Mongo trade doc into the fields the UI already expects.
+function transformTrade(t) {
+  return {
+    id: t._id,
+    openTime: t.openTime ? new Date(t.openTime).getTime() : Date.now(),
+    closeTime: t.closeTime ? new Date(t.closeTime).getTime() : undefined,
+    symbolLabel: t.symbolLabel,
+    market: t.market,
+    marketLabel: t.marketLabel,
+    side: t.side,
+    sideLabel: t.sideLabel,
+    digit: t.digit,
+    resultDigit: t.resultDigit,
+    stake: t.stake,
+    payout: t.payout,
+    status: t.status,
+    won: t.status === "won",
+  };
+}
+
+// Shapes a Mongo payment doc into the fields PaymentRow/History expect.
+function transformPayment(p) {
+  return {
+    id: p._id,
+    type: p.type,
+    amount: p.amountKes,
+    usdAmount: p.usdAmount,
+    phone: p.phone,
+    status: p.status,
+    time: p.createdAt ? new Date(p.createdAt).getTime() : Date.now(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,77 +204,10 @@ function rotateDigitStats(prev) {
   return nudged.map((v) => Number(((v / sum) * 100).toFixed(1)));
 }
 
-// ---------------------------------------------------------------------------
-// Local account persistence.
-//
-// This runs entirely in the browser via localStorage/sessionStorage — there
-// is no backend user database yet. It's enough to survive refreshes and
-// logout/login on the SAME device/browser, but it will not sync a user's
-// data across different devices or browsers. A real "does this user exist"
-// check that works everywhere needs a backend database (e.g. extending the
-// Daraja server with a users table) — see the note in chat.
-// ---------------------------------------------------------------------------
-const USERS_KEY = "primevest_users_v1";
-const SESSION_KEY = "primevest_session_v1";
-
-function loadUsers() {
-  try {
-    return JSON.parse(localStorage.getItem(USERS_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
-
-function saveUsers(users) {
-  try {
-    localStorage.setItem(USERS_KEY, JSON.stringify(users));
-  } catch {
-    // localStorage unavailable (e.g. private browsing) — data just won't persist.
-  }
-}
-
-function getSessionEmail() {
-  try {
-    return localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY) || null;
-  } catch {
-    return null;
-  }
-}
-
-function setSessionEmail(email, remember) {
-  try {
-    if (remember) {
-      localStorage.setItem(SESSION_KEY, email);
-      sessionStorage.removeItem(SESSION_KEY);
-    } else {
-      sessionStorage.setItem(SESSION_KEY, email);
-      localStorage.removeItem(SESSION_KEY);
-    }
-  } catch {
-    // ignore
-  }
-}
-
-function clearSession() {
-  try {
-    localStorage.removeItem(SESSION_KEY);
-    sessionStorage.removeItem(SESSION_KEY);
-  } catch {
-    // ignore
-  }
-}
-
 function maskEmail(email) {
   if (!email || !email.includes("@")) return email || "";
   const [local, domain] = email.split("@");
   return `${local.charAt(0)}****@${domain}`;
-}
-
-function genReferralCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < 8; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
 }
 
 function relTime(ts) {
@@ -330,7 +313,6 @@ function PositionsPanel({ trades, posTab, setPosTab }) {
       label: "Stake",
       sub: t.sideLabel,
       amount: -t.stake,
-      balanceAfter: t.balanceAfterStake,
       tone: "stake",
     });
     if (t.status !== "open") {
@@ -340,7 +322,6 @@ function PositionsPanel({ trades, posTab, setPosTab }) {
         label: "Closed",
         sub: t.sideLabel,
         amount: t.status === "won" ? t.payout : -t.stake,
-        balanceAfter: t.balanceAfterClose,
         tone: t.status,
       });
     }
@@ -422,10 +403,10 @@ function PositionsPanel({ trades, posTab, setPosTab }) {
                   </div>
                   <div className="flex items-center justify-between gap-2 mt-0.5">
                     <span className="text-xs" style={{ color: c.textDim }}>
-                      {tx.sub} · {relTime(tx.time)}
+                      {tx.sub}
                     </span>
                     <span className="text-xs font-mono flex-shrink-0" style={{ color: c.textFaint }}>
-                      Bal: {tx.balanceAfter?.toFixed(2)}
+                      {relTime(tx.time)}
                     </span>
                   </div>
                 </div>
@@ -469,7 +450,7 @@ function TradingDashboard({
   realBalance,
   accountType,
   onSwitchAccount,
-  onBalanceChange,
+  onBalanceSet,
   trades,
   onAddTrade,
   onResolveTrade,
@@ -495,6 +476,28 @@ function TradingDashboard({
   const [digitStats, setDigitStats] = useState(INITIAL_DIGIT_STATS);
   const [tradeInFlight, setTradeInFlight] = useState(false);
   const [resultAlert, setResultAlert] = useState(null); // { type: "win" | "loss" | "error", title, message }
+  const [notifications, setNotifications] = useState([]);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+
+  useEffect(() => {
+    backendApi("/api/notifications")
+      .then(({ notifications }) => setNotifications(notifications))
+      .catch(() => {});
+  }, []);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  async function openNotifications() {
+    const opening = !notifPanelOpen;
+    setNotifPanelOpen(opening);
+    if (opening && unreadCount > 0) {
+      const unread = notifications.filter((n) => !n.read);
+      setNotifications((list) => list.map((n) => ({ ...n, read: true })));
+      unread.forEach((n) => {
+        backendApi(`/api/notifications/${n._id}/read`, { method: "PATCH" }).catch(() => {});
+      });
+    }
+  }
   const [view, setView] = useState("trade"); // "trade" | "positions"
   const [posTab, setPosTab] = useState("open"); // "open" | "closed" | "transactions"
   const [autoRunning, setAutoRunning] = useState(false);
@@ -589,57 +592,78 @@ function TradingDashboard({
   };
   const market = marketConfig[activeTab];
 
-  function evaluateWin(side, resultDigit) {
-    if (side === "matches") return resultDigit === selectedDigit;
-    if (side === "differs") return resultDigit !== selectedDigit;
-    if (side === "even") return resultDigit % 2 === 0;
-    if (side === "odd") return resultDigit % 2 === 1;
-    if (side === "over") return resultDigit > selectedDigit;
-    if (side === "under") return resultDigit < selectedDigit;
-    return false;
-  }
+  async function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt) {
+    const marketLabel =
+      activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under";
+    const sideLabel = side === marketSnapshot.left.key ? marketSnapshot.left.label : marketSnapshot.right.label;
 
-  function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt) {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    balanceRef.current = Math.max(0, Number((balanceRef.current - stakeAmt).toFixed(2)));
-    onBalanceChange?.(-stakeAmt);
+    const { tradeId, balance: newBalance } = await backendApi("/api/trades", {
+      method: "POST",
+      body: JSON.stringify({
+        accountType,
+        symbolLabel: symbol.label,
+        market: activeTab,
+        marketLabel,
+        side,
+        sideLabel,
+        digit: digitSnapshot,
+        stake: stakeAmt,
+      }),
+    });
+
+    balanceRef.current = newBalance;
+    onBalanceSet?.(accountType, newBalance);
     onAddTrade?.({
-      id,
+      id: tradeId,
       openTime: Date.now(),
       symbolLabel: symbol.label,
       market: activeTab,
-      marketLabel:
-        activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under",
+      marketLabel,
       side,
-      sideLabel: side === marketSnapshot.left.key ? marketSnapshot.left.label : marketSnapshot.right.label,
+      sideLabel,
       digit: digitSnapshot,
       stake: stakeAmt,
       payout: Number((stakeAmt * payoutRate).toFixed(2)),
       status: "open",
-      balanceAfterStake: balanceRef.current,
     });
-    return id;
+    return tradeId;
   }
 
-  function runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfitVal, stopLossVal, isAuto) {
-    const id = openPosition(side, marketSnapshot, digitSnapshot, stakeAmt);
-    const payoutAmt = Number((stakeAmt * payoutRate).toFixed(2));
+  async function runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfitVal, stopLossVal, isAuto) {
+    let id;
+    try {
+      id = await openPosition(side, marketSnapshot, digitSnapshot, stakeAmt);
+    } catch (err) {
+      runningRef.current = false;
+      setAutoRunning(false);
+      setStopRequested(false);
+      setTradeInFlight(false);
+      setResultAlert({ type: "error", title: "Couldn't place trade", message: err.message });
+      return;
+    }
 
-    window.setTimeout(() => {
-      const resultDigit = Math.floor(Math.random() * 10);
-      const won = evaluateWin(side, resultDigit);
-
-      if (won) {
-        balanceRef.current = Number((balanceRef.current + payoutAmt).toFixed(2));
-        onBalanceChange?.(payoutAmt);
+    window.setTimeout(async () => {
+      let result;
+      try {
+        result = await backendApi(`/api/trades/${id}/resolve`, { method: "PATCH" });
+      } catch (err) {
+        runningRef.current = false;
+        setAutoRunning(false);
+        setStopRequested(false);
+        setTradeInFlight(false);
+        setResultAlert({ type: "error", title: "Couldn't resolve trade", message: err.message });
+        return;
       }
+
+      const { won, resultDigit, payout: payoutAmt, balance: newBalance } = result;
+      balanceRef.current = newBalance;
+      onBalanceSet?.(accountType, newBalance);
 
       onResolveTrade?.(id, {
         status: won ? "won" : "lost",
         won,
         resultDigit,
         closeTime: Date.now(),
-        balanceAfterClose: balanceRef.current,
       });
 
       const prev = sessionStatsRef.current;
@@ -856,17 +880,48 @@ function TradingDashboard({
             +
           </button>
 
-          <button
-            className="relative flex items-center justify-center w-10 h-10 rounded-xl border"
-            style={{ background: c.surfaceAlt, borderColor: c.border }}
-            aria-label="Notifications"
-          >
-            <Bell size={18} style={{ color: c.textDim }} />
-            <span
-              className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full"
-              style={{ background: c.amber }}
-            />
-          </button>
+          <div className="relative">
+            <button
+              onClick={openNotifications}
+              className="relative flex items-center justify-center w-10 h-10 rounded-xl border"
+              style={{ background: c.surfaceAlt, borderColor: c.border }}
+              aria-label="Notifications"
+            >
+              <Bell size={18} style={{ color: c.textDim }} />
+              {unreadCount > 0 && (
+                <span
+                  className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full"
+                  style={{ background: c.amber }}
+                />
+              )}
+            </button>
+            {notifPanelOpen && (
+              <div
+                className="absolute right-0 mt-2 w-72 max-h-96 overflow-y-auto rounded-xl border shadow-2xl z-20"
+                style={{ background: c.elevated, borderColor: c.border }}
+              >
+                {notifications.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-sm" style={{ color: c.textDim }}>
+                    No notifications yet
+                  </div>
+                ) : (
+                  notifications.map((n) => (
+                    <div
+                      key={n._id}
+                      className="px-4 py-3 border-b"
+                      style={{ borderColor: c.border }}
+                    >
+                      <div className="text-sm font-bold mb-0.5">{n.title}</div>
+                      <div className="text-xs mb-1" style={{ color: c.textDim }}>{n.body}</div>
+                      <div className="text-[11px]" style={{ color: c.textFaint }}>
+                        {relTime(new Date(n.createdAt).getTime())}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
 
           <button
             onClick={() => setSidebarOpen(true)}
@@ -1639,16 +1694,14 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
     return e;
   }
 
-  function handleSubmit(ev) {
+  async function handleSubmit(ev) {
     ev.preventDefault();
     const e = validate();
     setErrors(e);
     if (Object.keys(e).length > 0) return;
     setSubmitting(true);
-    window.setTimeout(() => {
-      setSubmitting(false);
-      onAuth?.({ mode, name: form.name, email: form.email, remember });
-    }, 800);
+    await onAuth?.({ mode, name: form.name, email: form.email, password: form.password, remember });
+    setSubmitting(false);
   }
 
   const inputStyle = {
@@ -2059,12 +2112,13 @@ function isValidKenyanNumber(raw) {
 // ---------------------------------------------------------------------------
 // DEPOSIT — M-Pesa STK Push
 // ---------------------------------------------------------------------------
-function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
+function DepositScreen({ onBack, onComplete, onBalanceSet, onAddPayment }) {
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState({});
   const [stage, setStage] = useState("form"); // form | pushed | waiting | success | failed
   const [apiError, setApiError] = useState("");
+  const [creditedUsd, setCreditedUsd] = useState(0);
 
   async function submit(e) {
     e.preventDefault();
@@ -2081,20 +2135,23 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
     setApiError("");
     setStage("pushed");
     try {
-      const { checkoutRequestId } = await mpesaApi("/api/mpesa/stkpush", {
+      const { checkoutRequestId } = await backendApi("/api/payments/deposit", {
         method: "POST",
-        body: JSON.stringify({ phone: msisdn, amount: amt, accountRef: "PrimeVest" }),
+        body: JSON.stringify({ phone: msisdn, amountKes: amt }),
       });
       setStage("waiting");
-      const result = await pollStatus(`/api/mpesa/stkpush/status/${checkoutRequestId}`);
+      const result = await pollStatus(`/api/payments/deposit/status/${checkoutRequestId}`);
       if (result.status === "success") {
-        const usdCredit = kesToUsd(amt);
-        onBalanceChange?.(usdCredit);
+        setCreditedUsd(result.usdAmount);
+        // The callback already credited the balance server-side — pull the
+        // authoritative figure rather than guessing at it locally.
+        const { user } = await backendApi("/api/auth/me");
+        onBalanceSet?.(user.realBalance);
         onAddPayment?.({
           id: checkoutRequestId,
           type: "deposit",
           amount: amt,
-          usdAmount: usdCredit,
+          usdAmount: result.usdAmount,
           phone: msisdn,
           status: "success",
           time: Date.now(),
@@ -2110,7 +2167,7 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
     }
   }
 
-  const usdEquivalent = amount ? kesToUsd(Number(amount)) : 0;
+  const usdEquivalent = creditedUsd || (amount ? kesToUsd(Number(amount)) : 0);
 
   if (stage === "failed") {
     return (
@@ -2306,14 +2363,16 @@ function DepositScreen({ onBack, onComplete, onBalanceChange, onAddPayment }) {
 // ---------------------------------------------------------------------------
 // WITHDRAW — to M-Pesa
 // ---------------------------------------------------------------------------
-function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPayment }) {
+function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPayment }) {
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState({});
-  const [stage, setStage] = useState("form"); // form | processing | success
+  const [stage, setStage] = useState("form"); // form | processing | success | failed
   const [reference, setReference] = useState("");
+  const [apiError, setApiError] = useState("");
+  const [kesAmount, setKesAmount] = useState(0);
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
     const errs = {};
     if (!isValidKenyanNumber(phone)) errs.phone = "Enter a valid Safaricom number";
@@ -2328,28 +2387,56 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
     setPhone(msisdn);
 
     setStage("processing");
-
-    // No live M-Pesa B2C payout is wired up yet — this records the
-    // request for manual disbursement instead of calling Safaricom.
-    window.setTimeout(() => {
-      const ref = `WD-${Date.now().toString(36).toUpperCase()}`;
-      const kesAmount = usdToKes(amt);
-      setReference(ref);
-      onBalanceChange?.(-amt);
+    try {
+      const data = await backendApi("/api/payments/withdraw", {
+        method: "POST",
+        body: JSON.stringify({ phone: msisdn, amountUsd: amt }),
+      });
+      setReference(data.reference);
+      setKesAmount(data.amountKes);
+      onBalanceSet?.(data.balance);
       onAddPayment?.({
-        id: ref,
+        id: data.reference,
         type: "withdrawal",
-        amount: kesAmount,
+        amount: data.amountKes,
         usdAmount: amt,
         phone: msisdn,
         status: "pending",
         time: Date.now(),
       });
       setStage("success");
-    }, 1200);
+    } catch (err) {
+      setApiError(err.message || "Something went wrong");
+      setStage("failed");
+    }
   }
 
-  const kesEquivalent = amount ? usdToKes(Number(amount)) : 0;
+  const kesEquivalent = kesAmount || (amount ? usdToKes(Number(amount)) : 0);
+
+  if (stage === "failed") {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Withdraw" onBack={onBack} />
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+          <div
+            className="w-16 h-16 rounded-full flex items-center justify-center mb-6"
+            style={{ background: c.redDim }}
+          >
+            <X size={26} style={{ color: c.red }} />
+          </div>
+          <h2 className="text-lg font-bold mb-2">Withdrawal request failed</h2>
+          <p className="text-sm max-w-xs mb-8" style={{ color: c.textDim }}>{apiError}</p>
+          <button
+            onClick={() => setStage("form")}
+            className="h-12 px-6 rounded-2xl text-sm font-bold"
+            style={{ background: c.amber, color: "#181205" }}
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (stage === "processing") {
     return (
@@ -2483,1223 +2570,4 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceChange, onAddPay
             )}
             <AmountChips
               value={amount}
-              onPick={(a) => setAmount(String(a))}
-              tiers={USD_QUICK_AMOUNTS}
-              formatLabel={(a) => `$${a}`}
-            />
-          </div>
-
-          <button
-            type="submit"
-            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mt-1"
-            style={{ height: 52, background: c.amber, color: "#181205" }}
-          >
-            Submit withdrawal request
-            <ArrowRight size={16} />
-          </button>
-
-          <div className="flex items-center gap-2 justify-center text-xs" style={{ color: c.textFaint }}>
-            <ShieldCheck size={13} />
-            Withdrawals are reviewed and sent manually
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// TRADE HISTORY
-// ---------------------------------------------------------------------------
-function relativeTime(ts) {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
-}
-
-function PaymentRow({ p }) {
-  const isDeposit = p.type === "deposit";
-  const pending = p.status === "pending";
-  return (
-    <div
-      className="flex items-center gap-3 rounded-2xl border p-3.5"
-      style={{ background: c.surface, borderColor: c.border }}
-    >
-      <div
-        className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: pending ? c.amberDim : isDeposit ? c.greenDim : c.redDim }}
-      >
-        {isDeposit ? (
-          <ArrowDownRight size={18} style={{ color: c.green }} />
-        ) : (
-          <ArrowUpRight size={18} style={{ color: pending ? c.amber : c.red }} />
-        )}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-bold truncate">
-            {isDeposit ? "M-Pesa deposit" : "Withdrawal to M-Pesa"}
-          </span>
-          <span
-            className="text-sm font-bold font-mono flex-shrink-0"
-            style={{ color: isDeposit ? c.green : c.amber }}
-          >
-            {isDeposit ? "+" : "-"}KES {p.amount.toLocaleString()}
-          </span>
-        </div>
-        <div className="flex items-center justify-between gap-2 mt-0.5">
-          <span className="text-xs" style={{ color: c.textDim }}>
-            {p.phone} {pending && "· Pending"}
-          </span>
-          <span className="text-xs flex-shrink-0 font-mono" style={{ color: c.textFaint }}>
-            {p.usdAmount != null ? `≈ $${p.usdAmount.toFixed(2)} · ` : ""}
-            {relativeTime(p.time)}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function HistoryScreen({ trades, payments, onBack }) {
-  const [tab, setTab] = useState("trades"); // trades | deposits | withdrawals
-  const [filter, setFilter] = useState("all"); // all | won | lost
-
-  const filtered = trades.filter((t) => {
-    if (filter === "won") return t.won;
-    if (filter === "lost") return !t.won;
-    return true;
-  });
-
-  const stats = trades.reduce(
-    (acc, t) => {
-      acc.staked += t.stake;
-      acc.net += t.won ? t.payout - t.stake : -t.stake;
-      if (t.won) acc.wins += 1;
-      return acc;
-    },
-    { staked: 0, net: 0, wins: 0 }
-  );
-
-  const deposits = payments.filter((p) => p.type === "deposit");
-  const withdrawals = payments.filter((p) => p.type === "withdrawal");
-
-  return (
-    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <MoneyHeader title="History" onBack={onBack} />
-
-      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto">
-        <div className="flex gap-2 mb-5">
-          {[
-            { id: "trades", label: "Trades" },
-            { id: "deposits", label: "Deposits" },
-            { id: "withdrawals", label: "Withdrawals" },
-          ].map((t) => {
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className="flex-1 h-10 rounded-xl text-xs sm:text-sm font-bold transition"
-                style={{
-                  background: active ? c.amber : c.surfaceAlt,
-                  color: active ? "#181205" : c.textDim,
-                  border: `1px solid ${active ? c.amber : c.border}`,
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {tab === "trades" && (
-          <>
-            {trades.length > 0 && (
-              <div className="grid grid-cols-3 gap-2.5 mb-5">
-                <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
-                  <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
-                    TRADES
-                  </div>
-                  <div className="text-lg font-bold font-mono">{trades.length}</div>
-                </div>
-                <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
-                  <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
-                    WIN RATE
-                  </div>
-                  <div className="text-lg font-bold font-mono">
-                    {Math.round((stats.wins / trades.length) * 100)}%
-                  </div>
-                </div>
-                <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
-                  <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
-                    NET P/L
-                  </div>
-                  <div
-                    className="text-lg font-bold font-mono"
-                    style={{ color: stats.net >= 0 ? c.green : c.red }}
-                  >
-                    {stats.net >= 0 ? "+" : ""}
-                    ${stats.net.toFixed(2)}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {trades.length > 0 && (
-              <div className="flex gap-2 mb-4">
-                {[
-                  { id: "all", label: "All" },
-                  { id: "won", label: "Won" },
-                  { id: "lost", label: "Lost" },
-                ].map((f) => {
-                  const active = filter === f.id;
-                  return (
-                    <button
-                      key={f.id}
-                      onClick={() => setFilter(f.id)}
-                      className="h-9 px-4 rounded-xl text-xs font-bold transition"
-                      style={{
-                        background: active ? c.amber : c.surfaceAlt,
-                        color: active ? "#181205" : c.textDim,
-                        border: `1px solid ${active ? c.amber : c.border}`,
-                      }}
-                    >
-                      {f.label}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {trades.length === 0 ? (
-              <div className="flex flex-col items-center justify-center text-center py-20">
-                <div
-                  className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
-                  style={{ background: c.surfaceAlt }}
-                >
-                  <History size={26} style={{ color: c.textFaint }} />
-                </div>
-                <h3 className="text-base font-bold mb-1.5">No trades yet</h3>
-                <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
-                  Trades you place from the dashboard will show up here.
-                </p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {filtered.map((t) => (
-                  <div
-                    key={t.id}
-                    className="flex items-center gap-3 rounded-2xl border p-3.5"
-                    style={{ background: c.surface, borderColor: c.border }}
-                  >
-                    <div
-                      className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                      style={{ background: t.won ? c.greenDim : c.redDim }}
-                    >
-                      {t.won ? (
-                        <ArrowUpRight size={18} style={{ color: c.green }} />
-                      ) : (
-                        <ArrowDownRight size={18} style={{ color: c.red }} />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-bold truncate">
-                          {t.marketLabel} · {t.sideLabel}
-                        </span>
-                        <span
-                          className="text-sm font-bold font-mono flex-shrink-0"
-                          style={{ color: t.won ? c.green : c.red }}
-                        >
-                          {t.won ? "+" : "-"}${t.won ? (t.payout - t.stake).toFixed(2) : t.stake.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2 mt-0.5">
-                        <span className="text-xs" style={{ color: c.textDim }}>
-                          Stake ${t.stake.toFixed(2)} · Digit {t.resultDigit}
-                        </span>
-                        <span className="text-xs flex-shrink-0" style={{ color: c.textFaint }}>
-                          {relativeTime(t.closeTime)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {tab === "deposits" &&
-          (deposits.length === 0 ? (
-            <div className="flex flex-col items-center justify-center text-center py-20">
-              <div
-                className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
-                style={{ background: c.surfaceAlt }}
-              >
-                <Wallet size={24} style={{ color: c.textFaint }} />
-              </div>
-              <h3 className="text-base font-bold mb-1.5">No deposits yet</h3>
-              <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
-                Successful M-Pesa deposits will show up here.
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2.5">
-              {deposits.map((p) => (
-                <PaymentRow key={p.id} p={p} />
-              ))}
-            </div>
-          ))}
-
-        {tab === "withdrawals" &&
-          (withdrawals.length === 0 ? (
-            <div className="flex flex-col items-center justify-center text-center py-20">
-              <div
-                className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
-                style={{ background: c.surfaceAlt }}
-              >
-                <ArrowLeftRight size={24} style={{ color: c.textFaint }} />
-              </div>
-              <h3 className="text-base font-bold mb-1.5">No withdrawals yet</h3>
-              <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
-                Submitted withdrawal requests will show up here.
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2.5">
-              {withdrawals.map((p) => (
-                <PaymentRow key={p.id} p={p} />
-              ))}
-            </div>
-          ))}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ABOUT / RESPONSIBLE TRADING
-// ---------------------------------------------------------------------------
-function AboutScreen({ onBack }) {
-  const guidelines = [
-    {
-      icon: DollarSign,
-      color: c.green,
-      bg: c.greenDim,
-      title: "Set a Budget",
-      body: "Only trade with money you can afford to lose. Never use funds needed for essential expenses.",
-    },
-    {
-      icon: Clock,
-      color: "#5B8DEF",
-      bg: "rgba(91,141,239,0.14)",
-      title: "Take Breaks",
-      body: "Set time limits for your trading sessions. Regular breaks help maintain focus and clear thinking.",
-    },
-    {
-      icon: AlertTriangle,
-      color: c.amber,
-      bg: c.amberDim,
-      title: "Know the Risks",
-      body: "Trading involves real risk of loss. Past performance never guarantees future results.",
-    },
-    {
-      icon: Heart,
-      color: c.red,
-      bg: c.redDim,
-      title: "Emotional Control",
-      body: "Don't trade when upset, tired, or under the influence. Emotional trading leads to poor decisions.",
-    },
-  ];
-
-  return (
-    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <MoneyHeader title="About PrimeVest" onBack={onBack} />
-
-      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto flex flex-col gap-4">
-        {/* Company blurb */}
-        <div className="rounded-3xl border p-6" style={{ background: c.surface, borderColor: c.border }}>
-          <div className="flex items-center gap-2.5 mb-4">
-            <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center font-bold"
-              style={{ background: c.amber, color: "#181205" }}
-            >
-              P
-            </div>
-            <span className="text-base font-bold">Our story</span>
-          </div>
-          <p className="text-sm leading-relaxed mb-3" style={{ color: c.textDim }}>
-            PrimeVest was built to make trading synthetic volatility indices simple and
-            accessible, with deposits and withdrawals that work the way our users already
-            move money day to day — straight from M-Pesa, without extra steps.
-          </p>
-          <p className="text-sm leading-relaxed" style={{ color: c.textDim }}>
-            We're a small, product-led team focused on a fast, uncluttered trading
-            experience: clear pricing, instant deposits, and a support team that actually
-            responds. We're still early — if something feels off, we want to hear about
-            it through Live Chat or Help Centre.
-          </p>
-        </div>
-
-        {/* Responsible trading hero */}
-        <div
-          className="rounded-3xl border p-6 flex flex-col items-center text-center"
-          style={{ background: c.surface, borderColor: c.border }}
-        >
-          <div
-            className="w-16 h-16 rounded-full flex items-center justify-center mb-4"
-            style={{ background: "rgba(45,212,191,0.16)" }}
-          >
-            <Heart size={26} style={{ color: "#2DD4BF" }} />
-          </div>
-          <h2 className="text-xl font-bold mb-2">Trade Responsibly</h2>
-          <p className="text-sm max-w-sm" style={{ color: c.textDim }}>
-            At PrimeVest, we care about your well-being. Trading should be enjoyable and
-            within your means. Here are some guidelines to help you trade responsibly.
-          </p>
-        </div>
-
-        {guidelines.map((g) => (
-          <div
-            key={g.title}
-            className="rounded-3xl border p-5"
-            style={{ background: c.surface, borderColor: c.border }}
-          >
-            <div
-              className="w-11 h-11 rounded-xl flex items-center justify-center mb-4"
-              style={{ background: g.bg }}
-            >
-              <g.icon size={20} style={{ color: g.color }} />
-            </div>
-            <h3 className="text-base font-bold mb-1.5">{g.title}</h3>
-            <p className="text-sm leading-relaxed" style={{ color: c.textDim }}>{g.body}</p>
-          </div>
-        ))}
-
-        <p className="text-xs text-center px-4 py-2" style={{ color: c.textFaint }}>
-          If trading is affecting your finances, relationships, or wellbeing, please reach
-          out to a local support service or talk to someone you trust.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// LIVE CHAT (simulated)
-// ---------------------------------------------------------------------------
-function botReplyFor(text) {
-  const t = text.toLowerCase();
-  if (/\b(hi|hello|hey)\b/.test(t)) return "Hey there! How can I help you today?";
-  if (t.includes("deposit"))
-    return "Deposits go through M-Pesa STK Push — enter your amount, confirm the prompt on your phone, and it reflects in your Real account right away.";
-  if (t.includes("withdraw"))
-    return "Withdrawal requests are reviewed and sent manually by our team. You'll see the status update from Pending to Completed in your History once it's processed.";
-  if (t.includes("balance"))
-    return "You can check your balance at the top of the Trade screen — tap it to switch between your Demo and Real accounts.";
-  if (t.includes("password") || t.includes("2fa") || t.includes("verify"))
-    return "You can manage your password, 2FA, and identity verification under Account Settings in the menu.";
-  if (t.includes("refer") || t.includes("earn"))
-    return "Refer & Earn is in the menu — share your link and earn a percentage from your referrals' activity.";
-  return "Thanks for reaching out! One of our agents will get back to you shortly.";
-}
-
-function LiveChatScreen({ onBack }) {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [botTyping, setBotTyping] = useState(false);
-  const scrollRef = useRef(null);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, botTyping]);
-
-  function send() {
-    const text = input.trim();
-    if (!text) return;
-    setMessages((m) => [...m, { id: Date.now(), from: "user", text }]);
-    setInput("");
-    setBotTyping(true);
-    window.setTimeout(() => {
-      setBotTyping(false);
-      setMessages((m) => [...m, { id: Date.now() + 1, from: "agent", text: botReplyFor(text) }]);
-    }, 1100 + Math.random() * 700);
-  }
-
-  return (
-    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <div
-        className="flex items-center gap-3 px-4 sm:px-6 py-4"
-        style={{ background: "linear-gradient(135deg, #2563EB, #3B82F6)" }}
-      >
-        <button onClick={onBack} className="flex-shrink-0" aria-label="Back">
-          <ArrowLeft size={20} style={{ color: "#fff" }} />
-        </button>
-        <div
-          className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0"
-          style={{ background: "rgba(255,255,255,0.18)" }}
-        >
-          <MessageCircle size={20} style={{ color: "#fff" }} />
-        </div>
-        <div>
-          <div className="text-base font-bold text-white">Live Support</div>
-          <div className="flex items-center gap-1.5 text-xs text-white/85">
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#4ADE80" }} />
-            Online · Typically replies instantly
-          </div>
-        </div>
-      </div>
-
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-6 py-5">
-        {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center">
-            <div
-              className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
-              style={{ background: "rgba(59,130,246,0.16)" }}
-            >
-              <MessageCircle size={26} style={{ color: "#3B82F6" }} />
-            </div>
-            <h3 className="text-base font-bold mb-1.5">Welcome to Support!</h3>
-            <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
-              Send us a message and we'll get back to you as soon as possible.
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 max-w-2xl mx-auto">
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className="flex"
-                style={{ justifyContent: m.from === "user" ? "flex-end" : "flex-start" }}
-              >
-                <div
-                  className="max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
-                  style={{
-                    background: m.from === "user" ? c.amber : c.surface,
-                    color: m.from === "user" ? "#181205" : c.text,
-                    border: m.from === "user" ? "none" : `1px solid ${c.border}`,
-                    borderBottomRightRadius: m.from === "user" ? 4 : 16,
-                    borderBottomLeftRadius: m.from === "user" ? 16 : 4,
-                  }}
-                >
-                  {m.text}
-                </div>
-              </div>
-            ))}
-            {botTyping && (
-              <div className="flex justify-start">
-                <div
-                  className="rounded-2xl px-4 py-3 flex gap-1"
-                  style={{ background: c.surface, border: `1px solid ${c.border}`, borderBottomLeftRadius: 4 }}
-                >
-                  {[0, 1, 2].map((i) => (
-                    <span
-                      key={i}
-                      className="w-1.5 h-1.5 rounded-full animate-pulse"
-                      style={{ background: c.textFaint, animationDelay: `${i * 150}ms` }}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="flex items-center gap-2 px-4 sm:px-6 py-3 border-t" style={{ borderColor: c.border }}>
-        <button
-          className="flex items-center justify-center w-11 h-11 rounded-xl flex-shrink-0"
-          style={{ background: c.surfaceAlt, border: `1px solid ${c.border}` }}
-          aria-label="Attach image"
-        >
-          <ImageIcon size={18} style={{ color: c.textDim }} />
-        </button>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Type your message..."
-          className="flex-1 h-11 rounded-xl px-4 text-sm outline-none"
-          style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, color: c.text }}
-        />
-        <button
-          onClick={send}
-          disabled={!input.trim()}
-          className="flex items-center justify-center w-11 h-11 rounded-xl flex-shrink-0"
-          style={{
-            background: input.trim() ? "linear-gradient(135deg, #2563EB, #3B82F6)" : c.surfaceAlt,
-            opacity: input.trim() ? 1 : 0.5,
-          }}
-          aria-label="Send"
-        >
-          <Send size={18} style={{ color: input.trim() ? "#fff" : c.textFaint }} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// REFER & EARN
-// ---------------------------------------------------------------------------
-function ReferScreen({ onBack, referralCode }) {
-  const [tab, setTab] = useState("overview"); // overview | referrals | earnings
-  const [copied, setCopied] = useState(false);
-  const link = `https://primevest.app/register?ref=${referralCode}`;
-
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // clipboard unavailable — silently ignore
-    }
-  }
-
-  async function shareLink() {
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: "Join PrimeVest", url: link });
-      } catch {
-        // user cancelled — ignore
-      }
-    } else {
-      copyLink();
-    }
-  }
-
-  return (
-    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <div
-        className="flex items-center gap-3 px-4 sm:px-6 h-16 border-b"
-        style={{ background: c.bg, borderColor: c.border }}
-      >
-        <button onClick={onBack} aria-label="Back">
-          <ArrowLeft size={20} style={{ color: c.text }} />
-        </button>
-        <span className="text-lg">🎁</span>
-        <span className="text-base font-bold">Refer &amp; Earn</span>
-      </div>
-
-      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto flex flex-col gap-4">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
-            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
-              <Briefcase size={13} /> Total Referrals
-            </div>
-            <div className="text-2xl font-bold">0</div>
-          </div>
-          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
-            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
-              <DollarSign size={13} /> Total Earned
-            </div>
-            <div className="text-2xl font-bold" style={{ color: c.green }}>$0.00</div>
-          </div>
-          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
-            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
-              <Clock size={13} /> Pending Today
-            </div>
-            <div className="text-2xl font-bold" style={{ color: c.amber }}>+$0.00</div>
-            <div className="text-[11px] mt-1" style={{ color: c.textFaint }}>Min $1 for payout</div>
-          </div>
-          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
-            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
-              <TrendingUp size={13} /> Your Rate
-            </div>
-            <div className="text-2xl font-bold" style={{ color: "#22D3EE" }}>10.00%</div>
-            <div className="text-[11px] mt-1" style={{ color: c.textFaint }}>Of referral losses</div>
-          </div>
-        </div>
-
-        <div
-          className="rounded-3xl overflow-hidden border"
-          style={{ borderColor: c.border }}
-        >
-          <div className="px-5 py-5" style={{ background: "linear-gradient(135deg, #9333EA, #4F46E5)" }}>
-            <div className="flex items-center gap-2 text-white font-bold text-base mb-1">
-              🔗 Your Referral Link
-            </div>
-            <div className="text-sm text-white/85">Earn 10.00% of your referrals' losses daily!</div>
-          </div>
-          <div className="p-5" style={{ background: c.surface }}>
-            <div className="text-xs font-semibold mb-2" style={{ color: c.textDim }}>Your Referral Link</div>
-            <div
-              className="flex items-center gap-2 rounded-xl border px-3 h-11 mb-4"
-              style={{ background: c.bg, borderColor: c.border }}
-            >
-              <span className="flex-1 text-sm font-mono truncate" style={{ color: c.text }}>{link}</span>
-              <button
-                onClick={copyLink}
-                className="flex items-center justify-center w-8 h-8 rounded-lg flex-shrink-0"
-                style={{ background: "rgba(147,51,234,0.18)" }}
-                aria-label="Copy link"
-              >
-                <Check size={14} style={{ color: copied ? c.green : "#C77DFF" }} />
-              </button>
-            </div>
-            <button
-              onClick={shareLink}
-              className="w-full h-12 rounded-2xl text-sm font-bold text-white"
-              style={{ background: "linear-gradient(135deg, #9333EA, #4F46E5)" }}
-            >
-              Share Your Link
-            </button>
-          </div>
-        </div>
-
-        <div className="flex gap-1.5 rounded-2xl p-1" style={{ background: c.surfaceAlt }}>
-          {[
-            { id: "overview", label: "Overview" },
-            { id: "referrals", label: "My Referrals" },
-            { id: "earnings", label: "Earnings" },
-          ].map((t) => {
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className="flex-1 h-10 rounded-xl text-xs sm:text-sm font-bold transition"
-                style={{
-                  background: active ? "linear-gradient(135deg, #9333EA, #7C3AED)" : "transparent",
-                  color: active ? "#fff" : c.textDim,
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {tab === "overview" && (
-          <div className="rounded-3xl border p-5" style={{ background: c.surface, borderColor: c.border }}>
-            <div className="flex items-center gap-2 font-bold text-base mb-4">
-              <TrendingUp size={17} style={{ color: "#C77DFF" }} /> How It Works
-            </div>
-            <div className="flex flex-col gap-4">
-              {[
-                { n: 1, color: "#7C3AED", title: "Share Your Link", body: "Send your unique referral link to friends" },
-                { n: 2, color: "#7C3AED", title: "They Sign Up & Trade", body: "When they register and start trading" },
-                { n: 3, color: c.green, title: "You Earn 10.00% Daily", body: "Earn commission from their trading losses every day" },
-              ].map((s) => (
-                <div key={s.n} className="flex items-start gap-3">
-                  <div
-                    className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0"
-                    style={{ background: s.color, color: "#fff" }}
-                  >
-                    {s.n}
-                  </div>
-                  <div>
-                    <div className="text-sm font-bold">{s.title}</div>
-                    <div className="text-xs mt-0.5" style={{ color: c.textDim }}>{s.body}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {tab === "referrals" && (
-          <div className="flex flex-col items-center justify-center text-center py-16">
-            <Briefcase size={26} style={{ color: c.textFaint }} className="mb-4" />
-            <h3 className="text-sm font-bold mb-1">No referrals yet</h3>
-            <p className="text-xs max-w-xs" style={{ color: c.textDim }}>
-              Friends who sign up with your link will show up here.
-            </p>
-          </div>
-        )}
-
-        {tab === "earnings" && (
-          <div className="flex flex-col items-center justify-center text-center py-16">
-            <DollarSign size={26} style={{ color: c.textFaint }} className="mb-4" />
-            <h3 className="text-sm font-bold mb-1">No earnings yet</h3>
-            <p className="text-xs max-w-xs" style={{ color: c.textDim }}>
-              Commission from your referrals' activity will show up here.
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ACCOUNT SETTINGS
-// ---------------------------------------------------------------------------
-function SettingsRow({ icon: Icon, label, badge, expanded, onToggle, children }) {
-  return (
-    <div className="border-b" style={{ borderColor: c.border }}>
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between gap-3 px-5 py-4 text-sm"
-      >
-        <span className="flex items-center gap-4">
-          <Icon size={18} style={{ color: c.textDim }} />
-          <span className="font-medium">{label}</span>
-          {badge}
-        </span>
-        <ChevronRight
-          size={17}
-          style={{ color: c.textDim, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
-        />
-      </button>
-      {expanded && <div className="px-5 pb-5">{children}</div>}
-    </div>
-  );
-}
-
-function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
-  const [open, setOpen] = useState(null);
-  const [name, setName] = useState(user?.name || "");
-  const [nameSaved, setNameSaved] = useState(false);
-  const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
-  const [pwError, setPwError] = useState("");
-  const [pwSaved, setPwSaved] = useState(false);
-  const [twoFactor, setTwoFactor] = useState(!!user?.twoFactorEnabled);
-  const [idForm, setIdForm] = useState({ legalName: "", idNumber: "" });
-  const identityStatus = user?.identityStatus || "unverified";
-
-  function toggle(key) {
-    setOpen((o) => (o === key ? null : key));
-  }
-
-  function saveName(e) {
-    e.preventDefault();
-    if (!name.trim()) return;
-    onUpdateUser?.({ name: name.trim() });
-    setNameSaved(true);
-    window.setTimeout(() => setNameSaved(false), 2000);
-  }
-
-  function savePassword(e) {
-    e.preventDefault();
-    setPwError("");
-    if (!pwForm.current || !pwForm.next) {
-      setPwError("Fill in all fields");
-      return;
-    }
-    if (pwForm.next.length < 8) {
-      setPwError("New password must be at least 8 characters");
-      return;
-    }
-    if (pwForm.next !== pwForm.confirm) {
-      setPwError("Passwords don't match");
-      return;
-    }
-    setPwSaved(true);
-    setPwForm({ current: "", next: "", confirm: "" });
-    window.setTimeout(() => setPwSaved(false), 2500);
-  }
-
-  function toggleTwoFactor() {
-    const next = !twoFactor;
-    setTwoFactor(next);
-    onUpdateUser?.({ twoFactorEnabled: next });
-  }
-
-  function submitIdentity(e) {
-    e.preventDefault();
-    if (!idForm.legalName.trim() || !idForm.idNumber.trim()) return;
-    onUpdateUser?.({ identityStatus: "pending" });
-  }
-
-  return (
-    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <MoneyHeader title="Account Settings" onBack={onBack} />
-
-      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto">
-        <div className="rounded-3xl border overflow-hidden" style={{ background: c.surface, borderColor: c.border }}>
-          <SettingsRow
-            icon={UserCog}
-            label="Change Name"
-            expanded={open === "name"}
-            onToggle={() => toggle("name")}
-          >
-            <form onSubmit={saveName} className="flex flex-col gap-3">
-              <Field icon={User}>
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Full name"
-                  className="flex-1 outline-none text-sm bg-transparent"
-                  style={{ color: c.text }}
-                />
-              </Field>
-              <button
-                type="submit"
-                className="h-11 rounded-xl text-sm font-bold"
-                style={{ background: c.amber, color: "#181205" }}
-              >
-                {nameSaved ? "Saved ✓" : "Save name"}
-              </button>
-            </form>
-          </SettingsRow>
-
-          <SettingsRow
-            icon={Lock}
-            label="Change Password"
-            expanded={open === "password"}
-            onToggle={() => toggle("password")}
-          >
-            <form onSubmit={savePassword} className="flex flex-col gap-3">
-              <Field icon={Lock}>
-                <input
-                  type="password"
-                  value={pwForm.current}
-                  onChange={(e) => setPwForm((f) => ({ ...f, current: e.target.value }))}
-                  placeholder="Current password"
-                  className="flex-1 outline-none text-sm bg-transparent"
-                  style={{ color: c.text }}
-                />
-              </Field>
-              <Field icon={Lock}>
-                <input
-                  type="password"
-                  value={pwForm.next}
-                  onChange={(e) => setPwForm((f) => ({ ...f, next: e.target.value }))}
-                  placeholder="New password"
-                  className="flex-1 outline-none text-sm bg-transparent"
-                  style={{ color: c.text }}
-                />
-              </Field>
-              <Field icon={Lock}>
-                <input
-                  type="password"
-                  value={pwForm.confirm}
-                  onChange={(e) => setPwForm((f) => ({ ...f, confirm: e.target.value }))}
-                  placeholder="Confirm new password"
-                  className="flex-1 outline-none text-sm bg-transparent"
-                  style={{ color: c.text }}
-                />
-              </Field>
-              {pwError && <div className="text-xs font-medium" style={{ color: c.red }}>{pwError}</div>}
-              <button
-                type="submit"
-                className="h-11 rounded-xl text-sm font-bold"
-                style={{ background: c.amber, color: "#181205" }}
-              >
-                {pwSaved ? "Password updated ✓" : "Update password"}
-              </button>
-            </form>
-          </SettingsRow>
-
-          <SettingsRow
-            icon={Smartphone}
-            label="Two-Factor Auth (2FA)"
-            badge={
-              twoFactor && (
-                <span
-                  className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                  style={{ background: c.greenDim, color: c.green }}
-                >
-                  ON
-                </span>
-              )
-            }
-            expanded={open === "2fa"}
-            onToggle={() => toggle("2fa")}
-          >
-            <div className="flex items-center justify-between rounded-xl border p-4" style={{ borderColor: c.border }}>
-              <div>
-                <div className="text-sm font-bold">SMS-based 2FA</div>
-                <div className="text-xs mt-0.5" style={{ color: c.textDim }}>
-                  Add an extra step when logging in
-                </div>
-              </div>
-              <button
-                onClick={toggleTwoFactor}
-                className="relative w-11 h-6 rounded-full transition-colors flex-shrink-0"
-                style={{ background: twoFactor ? c.green : c.borderStrong }}
-              >
-                <span
-                  className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform"
-                  style={{ transform: twoFactor ? "translateX(22px)" : "translateX(2px)" }}
-                />
-              </button>
-            </div>
-          </SettingsRow>
-
-          <SettingsRow
-            icon={UserCheck}
-            label="Verify Identity"
-            badge={
-              <span
-                className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                style={{
-                  background: identityStatus === "verified" ? c.greenDim : identityStatus === "pending" ? c.amberDim : c.surfaceAlt,
-                  color: identityStatus === "verified" ? c.green : identityStatus === "pending" ? c.amber : c.textFaint,
-                }}
-              >
-                {identityStatus === "verified" ? "VERIFIED" : identityStatus === "pending" ? "PENDING" : "UNVERIFIED"}
-              </span>
-            }
-            expanded={open === "identity"}
-            onToggle={() => toggle("identity")}
-          >
-            {identityStatus === "pending" ? (
-              <p className="text-sm" style={{ color: c.textDim }}>
-                Your documents are under review. This usually takes 1-2 business days.
-              </p>
-            ) : identityStatus === "verified" ? (
-              <p className="text-sm" style={{ color: c.textDim }}>Your identity has been verified.</p>
-            ) : (
-              <form onSubmit={submitIdentity} className="flex flex-col gap-3">
-                <Field icon={User}>
-                  <input
-                    value={idForm.legalName}
-                    onChange={(e) => setIdForm((f) => ({ ...f, legalName: e.target.value }))}
-                    placeholder="Full legal name"
-                    className="flex-1 outline-none text-sm bg-transparent"
-                    style={{ color: c.text }}
-                  />
-                </Field>
-                <Field icon={ShieldCheck}>
-                  <input
-                    value={idForm.idNumber}
-                    onChange={(e) => setIdForm((f) => ({ ...f, idNumber: e.target.value }))}
-                    placeholder="National ID / Passport number"
-                    className="flex-1 outline-none text-sm bg-transparent"
-                    style={{ color: c.text }}
-                  />
-                </Field>
-                <button
-                  type="submit"
-                  className="h-11 rounded-xl text-sm font-bold"
-                  style={{ background: c.amber, color: "#181205" }}
-                >
-                  Submit for review
-                </button>
-              </form>
-            )}
-          </SettingsRow>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// App shell — routes between the auth screen and the trading dashboard
-// ---------------------------------------------------------------------------
-export default function App() {
-  const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history" | "about"
-  const [booting, setBooting] = useState(true);
-  const [authError, setAuthError] = useState("");
-  const [user, setUser] = useState(null); // { name, email }
-  const [accountType, setAccountType] = useState("demo"); // "demo" | "real"
-  const [demoBalance, setDemoBalance] = useState(10000);
-  const [realBalance, setRealBalance] = useState(0);
-  const [trades, setTrades] = useState([]);
-  const [payments, setPayments] = useState([]); // deposit + withdrawal history
-
-  // Restore a saved session (if any) once, on first load.
-  useEffect(() => {
-    const email = getSessionEmail();
-    if (email) {
-      const users = loadUsers();
-      const rec = users[email.toLowerCase()];
-      if (rec) {
-        setUser({
-          name: rec.name,
-          email: rec.email,
-          referralCode: rec.referralCode || genReferralCode(),
-          twoFactorEnabled: !!rec.twoFactorEnabled,
-          identityStatus: rec.identityStatus || "unverified",
-        });
-        setDemoBalance(rec.demoBalance ?? 10000);
-        setRealBalance(rec.realBalance ?? 0);
-        setTrades(rec.trades ?? []);
-        setPayments(rec.payments ?? []);
-        setScreen("dashboard");
-      }
-    }
-    setBooting(false);
-  }, []);
-
-  // Keep the logged-in user's record up to date so nothing is lost on
-  // logout/refresh — this is the localStorage persistence described above.
-  useEffect(() => {
-    if (booting || !user?.email) return;
-    const users = loadUsers();
-    const key = user.email.toLowerCase();
-    users[key] = {
-      ...(users[key] || {}),
-      name: user.name || users[key]?.name || "",
-      email: user.email,
-      referralCode: user.referralCode || users[key]?.referralCode,
-      twoFactorEnabled: !!user.twoFactorEnabled,
-      identityStatus: user.identityStatus || "unverified",
-      demoBalance,
-      realBalance,
-      trades,
-      payments,
-    };
-    saveUsers(users);
-  }, [booting, user, demoBalance, realBalance, trades, payments]);
-
-  const onUpdateUser = (patch) => setUser((u) => ({ ...u, ...patch }));
-
-  const adjustDemo = (delta) =>
-    setDemoBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
-  const adjustReal = (delta) =>
-    setRealBalance((b) => Math.max(0, Number((b + delta).toFixed(2))));
-  const adjustActive = (delta) => (accountType === "demo" ? adjustDemo(delta) : adjustReal(delta));
-
-  const addTrade = (entry) => setTrades((t) => [entry, ...t]);
-  const resolveTrade = (id, patch) =>
-    setTrades((list) => list.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  const addPayment = (entry) => setPayments((p) => [entry, ...p]);
-
-  function handleAuth({ mode, name, email, remember }) {
-    const users = loadUsers();
-    const key = email.trim().toLowerCase();
-    const existing = users[key];
-
-    if (mode === "signup") {
-      if (existing) {
-        setAuthError("An account with this email already exists — try logging in instead.");
-        return;
-      }
-      const referralCode = genReferralCode();
-      const rec = {
-        name,
-        email,
-        referralCode,
-        twoFactorEnabled: false,
-        identityStatus: "unverified",
-        demoBalance: 10000,
-        realBalance: 0,
-        trades: [],
-        payments: [],
-      };
-      users[key] = rec;
-      saveUsers(users);
-      setAuthError("");
-      setUser({ name, email, referralCode, twoFactorEnabled: false, identityStatus: "unverified" });
-      setAccountType("demo");
-      setDemoBalance(10000);
-      setRealBalance(0);
-      setTrades([]);
-      setPayments([]);
-      setSessionEmail(email, true);
-      setScreen("dashboard");
-    } else {
-      if (!existing) {
-        setAuthError("No account found with that email — create one first.");
-        return;
-      }
-      setAuthError("");
-      setUser({
-        name: existing.name,
-        email: existing.email,
-        referralCode: existing.referralCode || genReferralCode(),
-        twoFactorEnabled: !!existing.twoFactorEnabled,
-        identityStatus: existing.identityStatus || "unverified",
-      });
-      setAccountType("demo");
-      setDemoBalance(existing.demoBalance ?? 10000);
-      setRealBalance(existing.realBalance ?? 0);
-      setTrades(existing.trades ?? []);
-      setPayments(existing.payments ?? []);
-      setSessionEmail(email, remember);
-      setScreen("dashboard");
-    }
-  }
-
-  function handleLogout() {
-    clearSession();
-    setUser(null);
-    setAccountType("demo");
-    setDemoBalance(10000);
-    setRealBalance(0);
-    setTrades([]);
-    setPayments([]);
-    setScreen("auth");
-  }
-
-  if (booting) return null;
-
-  const balance = accountType === "demo" ? demoBalance : realBalance;
-
-  if (screen === "dashboard") {
-    return (
-      <TradingDashboard
-        onLogout={handleLogout}
-        onNavigate={(next) => setScreen(next)}
-        balance={balance}
-        demoBalance={demoBalance}
-        realBalance={realBalance}
-        accountType={accountType}
-        onSwitchAccount={setAccountType}
-        onBalanceChange={adjustActive}
-        trades={trades}
-        onAddTrade={addTrade}
-        onResolveTrade={resolveTrade}
-        user={user}
-      />
-    );
-  }
-  if (screen === "deposit") {
-    return (
-      <DepositScreen
-        onBack={() => setScreen("dashboard")}
-        onComplete={() => setScreen("dashboard")}
-        onBalanceChange={adjustReal}
-        onAddPayment={addPayment}
-      />
-    );
-  }
-  if (screen === "withdraw") {
-    return (
-      <WithdrawScreen
-        onBack={() => setScreen("dashboard")}
-        onComplete={() => setScreen("dashboard")}
-        balance={realBalance}
-        onBalanceChange={adjustReal}
-        onAddPayment={addPayment}
-      />
-    );
-  }
-  if (screen === "history") {
-    return (
-      <HistoryScreen
-        trades={trades.filter((t) => t.status === "won" || t.status === "lost")}
-        payments={payments}
-        onBack={() => setScreen("dashboard")}
-      />
-    );
-  }
-  if (screen === "about") {
-    return <AboutScreen onBack={() => setScreen("dashboard")} />;
-  }
-  if (screen === "livechat") {
-    return <LiveChatScreen onBack={() => setScreen("dashboard")} />;
-  }
-  if (screen === "refer") {
-    return <ReferScreen onBack={() => setScreen("dashboard")} referralCode={user?.referralCode || ""} />;
-  }
-  if (screen === "settings") {
-    return (
-      <AccountSettingsScreen
-        onBack={() => setScreen("dashboard")}
-        user={user}
-        onUpdateUser={onUpdateUser}
-      />
-    );
-  }
-  return (
-    <AuthScreen
-      onAuth={handleAuth}
-      authError={authError}
-      clearAuthError={() => setAuthError("")}
-    />
-  );
-}
+              onPick={(a) => setAmount(Stri
