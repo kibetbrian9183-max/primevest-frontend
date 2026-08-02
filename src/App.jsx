@@ -2570,4 +2570,1217 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
             )}
             <AmountChips
               value={amount}
-              onPick={(a) => setAmount(Stri
+              onPick={(a) => setAmount(String(a))}
+              tiers={USD_QUICK_AMOUNTS}
+              formatLabel={(a) => `$${a}`}
+            />
+          </div>
+
+          <button
+            type="submit"
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mt-1"
+            style={{ height: 52, background: c.amber, color: "#181205" }}
+          >
+            Submit withdrawal request
+            <ArrowRight size={16} />
+          </button>
+
+          <div className="flex items-center gap-2 justify-center text-xs" style={{ color: c.textFaint }}>
+            <ShieldCheck size={13} />
+            Withdrawals are reviewed and sent manually
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TRADE HISTORY
+// ---------------------------------------------------------------------------
+function relativeTime(ts) {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+function PaymentRow({ p }) {
+  const isDeposit = p.type === "deposit";
+  const pending = p.status === "pending";
+  return (
+    <div
+      className="flex items-center gap-3 rounded-2xl border p-3.5"
+      style={{ background: c.surface, borderColor: c.border }}
+    >
+      <div
+        className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+        style={{ background: pending ? c.amberDim : isDeposit ? c.greenDim : c.redDim }}
+      >
+        {isDeposit ? (
+          <ArrowDownRight size={18} style={{ color: c.green }} />
+        ) : (
+          <ArrowUpRight size={18} style={{ color: pending ? c.amber : c.red }} />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-bold truncate">
+            {isDeposit ? "M-Pesa deposit" : "Withdrawal to M-Pesa"}
+          </span>
+          <span
+            className="text-sm font-bold font-mono flex-shrink-0"
+            style={{ color: isDeposit ? c.green : c.amber }}
+          >
+            {isDeposit ? "+" : "-"}KES {p.amount.toLocaleString()}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <span className="text-xs" style={{ color: c.textDim }}>
+            {p.phone} {pending && "· Pending"}
+          </span>
+          <span className="text-xs flex-shrink-0 font-mono" style={{ color: c.textFaint }}>
+            {p.usdAmount != null ? `≈ $${p.usdAmount.toFixed(2)} · ` : ""}
+            {relativeTime(p.time)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HistoryScreen({ trades, payments, onBack }) {
+  const [tab, setTab] = useState("trades"); // trades | deposits | withdrawals
+  const [filter, setFilter] = useState("all"); // all | won | lost
+
+  const filtered = trades.filter((t) => {
+    if (filter === "won") return t.won;
+    if (filter === "lost") return !t.won;
+    return true;
+  });
+
+  const stats = trades.reduce(
+    (acc, t) => {
+      acc.staked += t.stake;
+      acc.net += t.won ? t.payout - t.stake : -t.stake;
+      if (t.won) acc.wins += 1;
+      return acc;
+    },
+    { staked: 0, net: 0, wins: 0 }
+  );
+
+  const deposits = payments.filter((p) => p.type === "deposit");
+  const withdrawals = payments.filter((p) => p.type === "withdrawal");
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="History" onBack={onBack} />
+
+      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto">
+        <div className="flex gap-2 mb-5">
+          {[
+            { id: "trades", label: "Trades" },
+            { id: "deposits", label: "Deposits" },
+            { id: "withdrawals", label: "Withdrawals" },
+          ].map((t) => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className="flex-1 h-10 rounded-xl text-xs sm:text-sm font-bold transition"
+                style={{
+                  background: active ? c.amber : c.surfaceAlt,
+                  color: active ? "#181205" : c.textDim,
+                  border: `1px solid ${active ? c.amber : c.border}`,
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {tab === "trades" && (
+          <>
+            {trades.length > 0 && (
+              <div className="grid grid-cols-3 gap-2.5 mb-5">
+                <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
+                  <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
+                    TRADES
+                  </div>
+                  <div className="text-lg font-bold font-mono">{trades.length}</div>
+                </div>
+                <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
+                  <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
+                    WIN RATE
+                  </div>
+                  <div className="text-lg font-bold font-mono">
+                    {Math.round((stats.wins / trades.length) * 100)}%
+                  </div>
+                </div>
+                <div className="rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
+                  <div className="text-[11px] font-semibold mb-1" style={{ color: c.textDim }}>
+                    NET P/L
+                  </div>
+                  <div
+                    className="text-lg font-bold font-mono"
+                    style={{ color: stats.net >= 0 ? c.green : c.red }}
+                  >
+                    {stats.net >= 0 ? "+" : ""}
+                    ${stats.net.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {trades.length > 0 && (
+              <div className="flex gap-2 mb-4">
+                {[
+                  { id: "all", label: "All" },
+                  { id: "won", label: "Won" },
+                  { id: "lost", label: "Lost" },
+                ].map((f) => {
+                  const active = filter === f.id;
+                  return (
+                    <button
+                      key={f.id}
+                      onClick={() => setFilter(f.id)}
+                      className="h-9 px-4 rounded-xl text-xs font-bold transition"
+                      style={{
+                        background: active ? c.amber : c.surfaceAlt,
+                        color: active ? "#181205" : c.textDim,
+                        border: `1px solid ${active ? c.amber : c.border}`,
+                      }}
+                    >
+                      {f.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {trades.length === 0 ? (
+              <div className="flex flex-col items-center justify-center text-center py-20">
+                <div
+                  className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
+                  style={{ background: c.surfaceAlt }}
+                >
+                  <History size={26} style={{ color: c.textFaint }} />
+                </div>
+                <h3 className="text-base font-bold mb-1.5">No trades yet</h3>
+                <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
+                  Trades you place from the dashboard will show up here.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                {filtered.map((t) => (
+                  <div
+                    key={t.id}
+                    className="flex items-center gap-3 rounded-2xl border p-3.5"
+                    style={{ background: c.surface, borderColor: c.border }}
+                  >
+                    <div
+                      className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                      style={{ background: t.won ? c.greenDim : c.redDim }}
+                    >
+                      {t.won ? (
+                        <ArrowUpRight size={18} style={{ color: c.green }} />
+                      ) : (
+                        <ArrowDownRight size={18} style={{ color: c.red }} />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-bold truncate">
+                          {t.marketLabel} · {t.sideLabel}
+                        </span>
+                        <span
+                          className="text-sm font-bold font-mono flex-shrink-0"
+                          style={{ color: t.won ? c.green : c.red }}
+                        >
+                          {t.won ? "+" : "-"}${t.won ? (t.payout - t.stake).toFixed(2) : t.stake.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 mt-0.5">
+                        <span className="text-xs" style={{ color: c.textDim }}>
+                          Stake ${t.stake.toFixed(2)} · Digit {t.resultDigit}
+                        </span>
+                        <span className="text-xs flex-shrink-0" style={{ color: c.textFaint }}>
+                          {relativeTime(t.closeTime)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === "deposits" &&
+          (deposits.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-20">
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
+                style={{ background: c.surfaceAlt }}
+              >
+                <Wallet size={24} style={{ color: c.textFaint }} />
+              </div>
+              <h3 className="text-base font-bold mb-1.5">No deposits yet</h3>
+              <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
+                Successful M-Pesa deposits will show up here.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {deposits.map((p) => (
+                <PaymentRow key={p.id} p={p} />
+              ))}
+            </div>
+          ))}
+
+        {tab === "withdrawals" &&
+          (withdrawals.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-20">
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
+                style={{ background: c.surfaceAlt }}
+              >
+                <ArrowLeftRight size={24} style={{ color: c.textFaint }} />
+              </div>
+              <h3 className="text-base font-bold mb-1.5">No withdrawals yet</h3>
+              <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
+                Submitted withdrawal requests will show up here.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {withdrawals.map((p) => (
+                <PaymentRow key={p.id} p={p} />
+              ))}
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ABOUT / RESPONSIBLE TRADING
+// ---------------------------------------------------------------------------
+function AboutScreen({ onBack }) {
+  const guidelines = [
+    {
+      icon: DollarSign,
+      color: c.green,
+      bg: c.greenDim,
+      title: "Set a Budget",
+      body: "Only trade with money you can afford to lose. Never use funds needed for essential expenses.",
+    },
+    {
+      icon: Clock,
+      color: "#5B8DEF",
+      bg: "rgba(91,141,239,0.14)",
+      title: "Take Breaks",
+      body: "Set time limits for your trading sessions. Regular breaks help maintain focus and clear thinking.",
+    },
+    {
+      icon: AlertTriangle,
+      color: c.amber,
+      bg: c.amberDim,
+      title: "Know the Risks",
+      body: "Trading involves real risk of loss. Past performance never guarantees future results.",
+    },
+    {
+      icon: Heart,
+      color: c.red,
+      bg: c.redDim,
+      title: "Emotional Control",
+      body: "Don't trade when upset, tired, or under the influence. Emotional trading leads to poor decisions.",
+    },
+  ];
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="About PrimeVest" onBack={onBack} />
+
+      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto flex flex-col gap-4">
+        {/* Company blurb */}
+        <div className="rounded-3xl border p-6" style={{ background: c.surface, borderColor: c.border }}>
+          <div className="flex items-center gap-2.5 mb-4">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center font-bold"
+              style={{ background: c.amber, color: "#181205" }}
+            >
+              P
+            </div>
+            <span className="text-base font-bold">Our story</span>
+          </div>
+          <p className="text-sm leading-relaxed mb-3" style={{ color: c.textDim }}>
+            PrimeVest was built to make trading synthetic volatility indices simple and
+            accessible, with deposits and withdrawals that work the way our users already
+            move money day to day — straight from M-Pesa, without extra steps.
+          </p>
+          <p className="text-sm leading-relaxed" style={{ color: c.textDim }}>
+            We're a small, product-led team focused on a fast, uncluttered trading
+            experience: clear pricing, instant deposits, and a support team that actually
+            responds. We're still early — if something feels off, we want to hear about
+            it through Live Chat or Help Centre.
+          </p>
+        </div>
+
+        {/* Responsible trading hero */}
+        <div
+          className="rounded-3xl border p-6 flex flex-col items-center text-center"
+          style={{ background: c.surface, borderColor: c.border }}
+        >
+          <div
+            className="w-16 h-16 rounded-full flex items-center justify-center mb-4"
+            style={{ background: "rgba(45,212,191,0.16)" }}
+          >
+            <Heart size={26} style={{ color: "#2DD4BF" }} />
+          </div>
+          <h2 className="text-xl font-bold mb-2">Trade Responsibly</h2>
+          <p className="text-sm max-w-sm" style={{ color: c.textDim }}>
+            At PrimeVest, we care about your well-being. Trading should be enjoyable and
+            within your means. Here are some guidelines to help you trade responsibly.
+          </p>
+        </div>
+
+        {guidelines.map((g) => (
+          <div
+            key={g.title}
+            className="rounded-3xl border p-5"
+            style={{ background: c.surface, borderColor: c.border }}
+          >
+            <div
+              className="w-11 h-11 rounded-xl flex items-center justify-center mb-4"
+              style={{ background: g.bg }}
+            >
+              <g.icon size={20} style={{ color: g.color }} />
+            </div>
+            <h3 className="text-base font-bold mb-1.5">{g.title}</h3>
+            <p className="text-sm leading-relaxed" style={{ color: c.textDim }}>{g.body}</p>
+          </div>
+        ))}
+
+        <p className="text-xs text-center px-4 py-2" style={{ color: c.textFaint }}>
+          If trading is affecting your finances, relationships, or wellbeing, please reach
+          out to a local support service or talk to someone you trust.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// LIVE CHAT (simulated)
+// ---------------------------------------------------------------------------
+function botReplyFor(text) {
+  const t = text.toLowerCase();
+  if (/\b(hi|hello|hey)\b/.test(t)) return "Hey there! How can I help you today?";
+  if (t.includes("deposit"))
+    return "Deposits go through M-Pesa STK Push — enter your amount, confirm the prompt on your phone, and it reflects in your Real account right away.";
+  if (t.includes("withdraw"))
+    return "Withdrawal requests are reviewed and sent manually by our team. You'll see the status update from Pending to Completed in your History once it's processed.";
+  if (t.includes("balance"))
+    return "You can check your balance at the top of the Trade screen — tap it to switch between your Demo and Real accounts.";
+  if (t.includes("password") || t.includes("2fa") || t.includes("verify"))
+    return "You can manage your password, 2FA, and identity verification under Account Settings in the menu.";
+  if (t.includes("refer") || t.includes("earn"))
+    return "Refer & Earn is in the menu — share your link and earn a percentage from your referrals' activity.";
+  return "Thanks for reaching out! One of our agents will get back to you shortly.";
+}
+
+function LiveChatScreen({ onBack }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [botTyping, setBotTyping] = useState(false);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, botTyping]);
+
+  function send() {
+    const text = input.trim();
+    if (!text) return;
+    setMessages((m) => [...m, { id: Date.now(), from: "user", text }]);
+    setInput("");
+    setBotTyping(true);
+    window.setTimeout(() => {
+      setBotTyping(false);
+      setMessages((m) => [...m, { id: Date.now() + 1, from: "agent", text: botReplyFor(text) }]);
+    }, 1100 + Math.random() * 700);
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <div
+        className="flex items-center gap-3 px-4 sm:px-6 py-4"
+        style={{ background: "linear-gradient(135deg, #2563EB, #3B82F6)" }}
+      >
+        <button onClick={onBack} className="flex-shrink-0" aria-label="Back">
+          <ArrowLeft size={20} style={{ color: "#fff" }} />
+        </button>
+        <div
+          className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0"
+          style={{ background: "rgba(255,255,255,0.18)" }}
+        >
+          <MessageCircle size={20} style={{ color: "#fff" }} />
+        </div>
+        <div>
+          <div className="text-base font-bold text-white">Live Support</div>
+          <div className="flex items-center gap-1.5 text-xs text-white/85">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#4ADE80" }} />
+            Online · Typically replies instantly
+          </div>
+        </div>
+      </div>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-6 py-5">
+        {messages.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-center">
+            <div
+              className="w-16 h-16 rounded-full flex items-center justify-center mb-5"
+              style={{ background: "rgba(59,130,246,0.16)" }}
+            >
+              <MessageCircle size={26} style={{ color: "#3B82F6" }} />
+            </div>
+            <h3 className="text-base font-bold mb-1.5">Welcome to Support!</h3>
+            <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
+              Send us a message and we'll get back to you as soon as possible.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3 max-w-2xl mx-auto">
+            {messages.map((m) => (
+              <div
+                key={m.id}
+                className="flex"
+                style={{ justifyContent: m.from === "user" ? "flex-end" : "flex-start" }}
+              >
+                <div
+                  className="max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
+                  style={{
+                    background: m.from === "user" ? c.amber : c.surface,
+                    color: m.from === "user" ? "#181205" : c.text,
+                    border: m.from === "user" ? "none" : `1px solid ${c.border}`,
+                    borderBottomRightRadius: m.from === "user" ? 4 : 16,
+                    borderBottomLeftRadius: m.from === "user" ? 16 : 4,
+                  }}
+                >
+                  {m.text}
+                </div>
+              </div>
+            ))}
+            {botTyping && (
+              <div className="flex justify-start">
+                <div
+                  className="rounded-2xl px-4 py-3 flex gap-1"
+                  style={{ background: c.surface, border: `1px solid ${c.border}`, borderBottomLeftRadius: 4 }}
+                >
+                  {[0, 1, 2].map((i) => (
+                    <span
+                      key={i}
+                      className="w-1.5 h-1.5 rounded-full animate-pulse"
+                      style={{ background: c.textFaint, animationDelay: `${i * 150}ms` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 px-4 sm:px-6 py-3 border-t" style={{ borderColor: c.border }}>
+        <button
+          className="flex items-center justify-center w-11 h-11 rounded-xl flex-shrink-0"
+          style={{ background: c.surfaceAlt, border: `1px solid ${c.border}` }}
+          aria-label="Attach image"
+        >
+          <ImageIcon size={18} style={{ color: c.textDim }} />
+        </button>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Type your message..."
+          className="flex-1 h-11 rounded-xl px-4 text-sm outline-none"
+          style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, color: c.text }}
+        />
+        <button
+          onClick={send}
+          disabled={!input.trim()}
+          className="flex items-center justify-center w-11 h-11 rounded-xl flex-shrink-0"
+          style={{
+            background: input.trim() ? "linear-gradient(135deg, #2563EB, #3B82F6)" : c.surfaceAlt,
+            opacity: input.trim() ? 1 : 0.5,
+          }}
+          aria-label="Send"
+        >
+          <Send size={18} style={{ color: input.trim() ? "#fff" : c.textFaint }} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// REFER & EARN
+// ---------------------------------------------------------------------------
+function ReferScreen({ onBack, referralCode }) {
+  const [tab, setTab] = useState("overview"); // overview | referrals | earnings
+  const [copied, setCopied] = useState(false);
+  const link = `https://primevest.app/register?ref=${referralCode}`;
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard unavailable — silently ignore
+    }
+  }
+
+  async function shareLink() {
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "Join PrimeVest", url: link });
+      } catch {
+        // user cancelled — ignore
+      }
+    } else {
+      copyLink();
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <div
+        className="flex items-center gap-3 px-4 sm:px-6 h-16 border-b"
+        style={{ background: c.bg, borderColor: c.border }}
+      >
+        <button onClick={onBack} aria-label="Back">
+          <ArrowLeft size={20} style={{ color: c.text }} />
+        </button>
+        <span className="text-lg">🎁</span>
+        <span className="text-base font-bold">Refer &amp; Earn</span>
+      </div>
+
+      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto flex flex-col gap-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
+              <Briefcase size={13} /> Total Referrals
+            </div>
+            <div className="text-2xl font-bold">0</div>
+          </div>
+          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
+              <DollarSign size={13} /> Total Earned
+            </div>
+            <div className="text-2xl font-bold" style={{ color: c.green }}>$0.00</div>
+          </div>
+          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
+              <Clock size={13} /> Pending Today
+            </div>
+            <div className="text-2xl font-bold" style={{ color: c.amber }}>+$0.00</div>
+            <div className="text-[11px] mt-1" style={{ color: c.textFaint }}>Min $1 for payout</div>
+          </div>
+          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+            <div className="flex items-center gap-1.5 text-xs mb-2" style={{ color: c.textDim }}>
+              <TrendingUp size={13} /> Your Rate
+            </div>
+            <div className="text-2xl font-bold" style={{ color: "#22D3EE" }}>10.00%</div>
+            <div className="text-[11px] mt-1" style={{ color: c.textFaint }}>Of referral losses</div>
+          </div>
+        </div>
+
+        <div
+          className="rounded-3xl overflow-hidden border"
+          style={{ borderColor: c.border }}
+        >
+          <div className="px-5 py-5" style={{ background: "linear-gradient(135deg, #9333EA, #4F46E5)" }}>
+            <div className="flex items-center gap-2 text-white font-bold text-base mb-1">
+              🔗 Your Referral Link
+            </div>
+            <div className="text-sm text-white/85">Earn 10.00% of your referrals' losses daily!</div>
+          </div>
+          <div className="p-5" style={{ background: c.surface }}>
+            <div className="text-xs font-semibold mb-2" style={{ color: c.textDim }}>Your Referral Link</div>
+            <div
+              className="flex items-center gap-2 rounded-xl border px-3 h-11 mb-4"
+              style={{ background: c.bg, borderColor: c.border }}
+            >
+              <span className="flex-1 text-sm font-mono truncate" style={{ color: c.text }}>{link}</span>
+              <button
+                onClick={copyLink}
+                className="flex items-center justify-center w-8 h-8 rounded-lg flex-shrink-0"
+                style={{ background: "rgba(147,51,234,0.18)" }}
+                aria-label="Copy link"
+              >
+                <Check size={14} style={{ color: copied ? c.green : "#C77DFF" }} />
+              </button>
+            </div>
+            <button
+              onClick={shareLink}
+              className="w-full h-12 rounded-2xl text-sm font-bold text-white"
+              style={{ background: "linear-gradient(135deg, #9333EA, #4F46E5)" }}
+            >
+              Share Your Link
+            </button>
+          </div>
+        </div>
+
+        <div className="flex gap-1.5 rounded-2xl p-1" style={{ background: c.surfaceAlt }}>
+          {[
+            { id: "overview", label: "Overview" },
+            { id: "referrals", label: "My Referrals" },
+            { id: "earnings", label: "Earnings" },
+          ].map((t) => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className="flex-1 h-10 rounded-xl text-xs sm:text-sm font-bold transition"
+                style={{
+                  background: active ? "linear-gradient(135deg, #9333EA, #7C3AED)" : "transparent",
+                  color: active ? "#fff" : c.textDim,
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {tab === "overview" && (
+          <div className="rounded-3xl border p-5" style={{ background: c.surface, borderColor: c.border }}>
+            <div className="flex items-center gap-2 font-bold text-base mb-4">
+              <TrendingUp size={17} style={{ color: "#C77DFF" }} /> How It Works
+            </div>
+            <div className="flex flex-col gap-4">
+              {[
+                { n: 1, color: "#7C3AED", title: "Share Your Link", body: "Send your unique referral link to friends" },
+                { n: 2, color: "#7C3AED", title: "They Sign Up & Trade", body: "When they register and start trading" },
+                { n: 3, color: c.green, title: "You Earn 10.00% Daily", body: "Earn commission from their trading losses every day" },
+              ].map((s) => (
+                <div key={s.n} className="flex items-start gap-3">
+                  <div
+                    className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0"
+                    style={{ background: s.color, color: "#fff" }}
+                  >
+                    {s.n}
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold">{s.title}</div>
+                    <div className="text-xs mt-0.5" style={{ color: c.textDim }}>{s.body}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {tab === "referrals" && (
+          <div className="flex flex-col items-center justify-center text-center py-16">
+            <Briefcase size={26} style={{ color: c.textFaint }} className="mb-4" />
+            <h3 className="text-sm font-bold mb-1">No referrals yet</h3>
+            <p className="text-xs max-w-xs" style={{ color: c.textDim }}>
+              Friends who sign up with your link will show up here.
+            </p>
+          </div>
+        )}
+
+        {tab === "earnings" && (
+          <div className="flex flex-col items-center justify-center text-center py-16">
+            <DollarSign size={26} style={{ color: c.textFaint }} className="mb-4" />
+            <h3 className="text-sm font-bold mb-1">No earnings yet</h3>
+            <p className="text-xs max-w-xs" style={{ color: c.textDim }}>
+              Commission from your referrals' activity will show up here.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ACCOUNT SETTINGS
+// ---------------------------------------------------------------------------
+function SettingsRow({ icon: Icon, label, badge, expanded, onToggle, children }) {
+  return (
+    <div className="border-b" style={{ borderColor: c.border }}>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-3 px-5 py-4 text-sm"
+      >
+        <span className="flex items-center gap-4">
+          <Icon size={18} style={{ color: c.textDim }} />
+          <span className="font-medium">{label}</span>
+          {badge}
+        </span>
+        <ChevronRight
+          size={17}
+          style={{ color: c.textDim, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
+        />
+      </button>
+      {expanded && <div className="px-5 pb-5">{children}</div>}
+    </div>
+  );
+}
+
+function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
+  const [open, setOpen] = useState(null);
+  const [name, setName] = useState(user?.name || "");
+  const [nameSaved, setNameSaved] = useState(false);
+  const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
+  const [pwError, setPwError] = useState("");
+  const [pwSaved, setPwSaved] = useState(false);
+  const [twoFactor, setTwoFactor] = useState(!!user?.twoFactorEnabled);
+  const [idForm, setIdForm] = useState({ legalName: "", idNumber: "" });
+  const identityStatus = user?.identityStatus || "unverified";
+
+  const [nameError, setNameError] = useState("");
+
+  function toggle(key) {
+    setOpen((o) => (o === key ? null : key));
+  }
+
+  async function saveName(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setNameError("");
+    try {
+      const { user: updated } = await backendApi("/api/auth/me", {
+        method: "PATCH",
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      onUpdateUser?.({ name: updated.name });
+      setNameSaved(true);
+      window.setTimeout(() => setNameSaved(false), 2000);
+    } catch (err) {
+      setNameError(err.message);
+    }
+  }
+
+  async function savePassword(e) {
+    e.preventDefault();
+    setPwError("");
+    if (!pwForm.current || !pwForm.next) {
+      setPwError("Fill in all fields");
+      return;
+    }
+    if (pwForm.next.length < 8) {
+      setPwError("New password must be at least 8 characters");
+      return;
+    }
+    if (pwForm.next !== pwForm.confirm) {
+      setPwError("Passwords don't match");
+      return;
+    }
+    try {
+      await backendApi("/api/auth/me/password", {
+        method: "PATCH",
+        body: JSON.stringify({ currentPassword: pwForm.current, newPassword: pwForm.next }),
+      });
+      setPwSaved(true);
+      setPwForm({ current: "", next: "", confirm: "" });
+      window.setTimeout(() => setPwSaved(false), 2500);
+    } catch (err) {
+      setPwError(err.message);
+    }
+  }
+
+  async function toggleTwoFactor() {
+    const next = !twoFactor;
+    setTwoFactor(next);
+    try {
+      const { user: updated } = await backendApi("/api/auth/me", {
+        method: "PATCH",
+        body: JSON.stringify({ twoFactorEnabled: next }),
+      });
+      onUpdateUser?.({ twoFactorEnabled: updated.twoFactorEnabled });
+    } catch {
+      setTwoFactor(!next); // revert on failure
+    }
+  }
+
+  async function submitIdentity(e) {
+    e.preventDefault();
+    if (!idForm.legalName.trim() || !idForm.idNumber.trim()) return;
+    try {
+      const { user: updated } = await backendApi("/api/auth/me/verify-identity", {
+        method: "POST",
+        body: JSON.stringify(idForm),
+      });
+      onUpdateUser?.({ identityStatus: updated.identityStatus });
+    } catch {
+      // form stays as-is; user can retry
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="Account Settings" onBack={onBack} />
+
+      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto">
+        <div className="rounded-3xl border overflow-hidden" style={{ background: c.surface, borderColor: c.border }}>
+          <SettingsRow
+            icon={UserCog}
+            label="Change Name"
+            expanded={open === "name"}
+            onToggle={() => toggle("name")}
+          >
+            <form onSubmit={saveName} className="flex flex-col gap-3">
+              <Field icon={User}>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Full name"
+                  className="flex-1 outline-none text-sm bg-transparent"
+                  style={{ color: c.text }}
+                />
+              </Field>
+              {nameError && <div className="text-xs font-medium" style={{ color: c.red }}>{nameError}</div>}
+              <button
+                type="submit"
+                className="h-11 rounded-xl text-sm font-bold"
+                style={{ background: c.amber, color: "#181205" }}
+              >
+                {nameSaved ? "Saved ✓" : "Save name"}
+              </button>
+            </form>
+          </SettingsRow>
+
+          <SettingsRow
+            icon={Lock}
+            label="Change Password"
+            expanded={open === "password"}
+            onToggle={() => toggle("password")}
+          >
+            <form onSubmit={savePassword} className="flex flex-col gap-3">
+              <Field icon={Lock}>
+                <input
+                  type="password"
+                  value={pwForm.current}
+                  onChange={(e) => setPwForm((f) => ({ ...f, current: e.target.value }))}
+                  placeholder="Current password"
+                  className="flex-1 outline-none text-sm bg-transparent"
+                  style={{ color: c.text }}
+                />
+              </Field>
+              <Field icon={Lock}>
+                <input
+                  type="password"
+                  value={pwForm.next}
+                  onChange={(e) => setPwForm((f) => ({ ...f, next: e.target.value }))}
+                  placeholder="New password"
+                  className="flex-1 outline-none text-sm bg-transparent"
+                  style={{ color: c.text }}
+                />
+              </Field>
+              <Field icon={Lock}>
+                <input
+                  type="password"
+                  value={pwForm.confirm}
+                  onChange={(e) => setPwForm((f) => ({ ...f, confirm: e.target.value }))}
+                  placeholder="Confirm new password"
+                  className="flex-1 outline-none text-sm bg-transparent"
+                  style={{ color: c.text }}
+                />
+              </Field>
+              {pwError && <div className="text-xs font-medium" style={{ color: c.red }}>{pwError}</div>}
+              <button
+                type="submit"
+                className="h-11 rounded-xl text-sm font-bold"
+                style={{ background: c.amber, color: "#181205" }}
+              >
+                {pwSaved ? "Password updated ✓" : "Update password"}
+              </button>
+            </form>
+          </SettingsRow>
+
+          <SettingsRow
+            icon={Smartphone}
+            label="Two-Factor Auth (2FA)"
+            badge={
+              twoFactor && (
+                <span
+                  className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                  style={{ background: c.greenDim, color: c.green }}
+                >
+                  ON
+                </span>
+              )
+            }
+            expanded={open === "2fa"}
+            onToggle={() => toggle("2fa")}
+          >
+            <div className="flex items-center justify-between rounded-xl border p-4" style={{ borderColor: c.border }}>
+              <div>
+                <div className="text-sm font-bold">SMS-based 2FA</div>
+                <div className="text-xs mt-0.5" style={{ color: c.textDim }}>
+                  Add an extra step when logging in
+                </div>
+              </div>
+              <button
+                onClick={toggleTwoFactor}
+                className="relative w-11 h-6 rounded-full transition-colors flex-shrink-0"
+                style={{ background: twoFactor ? c.green : c.borderStrong }}
+              >
+                <span
+                  className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform"
+                  style={{ transform: twoFactor ? "translateX(22px)" : "translateX(2px)" }}
+                />
+              </button>
+            </div>
+          </SettingsRow>
+
+          <SettingsRow
+            icon={UserCheck}
+            label="Verify Identity"
+            badge={
+              <span
+                className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                style={{
+                  background: identityStatus === "verified" ? c.greenDim : identityStatus === "pending" ? c.amberDim : c.surfaceAlt,
+                  color: identityStatus === "verified" ? c.green : identityStatus === "pending" ? c.amber : c.textFaint,
+                }}
+              >
+                {identityStatus === "verified" ? "VERIFIED" : identityStatus === "pending" ? "PENDING" : "UNVERIFIED"}
+              </span>
+            }
+            expanded={open === "identity"}
+            onToggle={() => toggle("identity")}
+          >
+            {identityStatus === "pending" ? (
+              <p className="text-sm" style={{ color: c.textDim }}>
+                Your documents are under review. This usually takes 1-2 business days.
+              </p>
+            ) : identityStatus === "verified" ? (
+              <p className="text-sm" style={{ color: c.textDim }}>Your identity has been verified.</p>
+            ) : (
+              <form onSubmit={submitIdentity} className="flex flex-col gap-3">
+                <Field icon={User}>
+                  <input
+                    value={idForm.legalName}
+                    onChange={(e) => setIdForm((f) => ({ ...f, legalName: e.target.value }))}
+                    placeholder="Full legal name"
+                    className="flex-1 outline-none text-sm bg-transparent"
+                    style={{ color: c.text }}
+                  />
+                </Field>
+                <Field icon={ShieldCheck}>
+                  <input
+                    value={idForm.idNumber}
+                    onChange={(e) => setIdForm((f) => ({ ...f, idNumber: e.target.value }))}
+                    placeholder="National ID / Passport number"
+                    className="flex-1 outline-none text-sm bg-transparent"
+                    style={{ color: c.text }}
+                  />
+                </Field>
+                <button
+                  type="submit"
+                  className="h-11 rounded-xl text-sm font-bold"
+                  style={{ background: c.amber, color: "#181205" }}
+                >
+                  Submit for review
+                </button>
+              </form>
+            )}
+          </SettingsRow>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App shell — routes between the auth screen and the trading dashboard
+// ---------------------------------------------------------------------------
+export default function App() {
+  const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history" | "about"
+  const [booting, setBooting] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [user, setUser] = useState(null); // { name, email, referralCode, twoFactorEnabled, identityStatus }
+  const [accountType, setAccountType] = useState("demo"); // "demo" | "real"
+  const [demoBalance, setDemoBalance] = useState(10000);
+  const [realBalance, setRealBalance] = useState(0);
+  const [trades, setTrades] = useState([]);
+  const [payments, setPayments] = useState([]); // deposit + withdrawal history
+
+  // Pulls this user's profile, balances, and history from the backend and
+  // populates local state — used on both fresh login and session restore.
+  async function loadSession(profile) {
+    setUser({
+      name: profile.name,
+      email: profile.email,
+      referralCode: profile.referralCode,
+      twoFactorEnabled: !!profile.twoFactorEnabled,
+      identityStatus: profile.identityStatus || "unverified",
+    });
+    setAccountType("demo");
+    setDemoBalance(profile.demoBalance ?? 10000);
+    setRealBalance(profile.realBalance ?? 0);
+
+    try {
+      const { trades: rawTrades } = await backendApi("/api/trades");
+      setTrades(rawTrades.map(transformTrade));
+    } catch {
+      setTrades([]);
+    }
+    try {
+      const { payments: rawPayments } = await backendApi("/api/payments");
+      setPayments(rawPayments.map(transformPayment));
+    } catch {
+      setPayments([]);
+    }
+  }
+
+  // Restore a saved session (if any) once, on first load.
+  useEffect(() => {
+    (async () => {
+      const token = getToken();
+      if (token) {
+        try {
+          const { user: profile } = await backendApi("/api/auth/me");
+          await loadSession(profile);
+          setScreen("dashboard");
+        } catch {
+          setToken(null); // expired/invalid — fall back to the login screen
+        }
+      }
+      setBooting(false);
+    })();
+  }, []);
+
+  const onUpdateUser = (patch) => setUser((u) => ({ ...u, ...patch }));
+
+  function setAccountBalance(type, amount) {
+    if (type === "demo") setDemoBalance(amount);
+    else setRealBalance(amount);
+  }
+
+  const addTrade = (entry) => setTrades((t) => [entry, ...t]);
+  const resolveTrade = (id, patch) =>
+    setTrades((list) => list.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  const addPayment = (entry) => setPayments((p) => [entry, ...p]);
+
+  async function handleAuth({ mode, name, email, password, remember }) {
+    try {
+      const data = await backendApi(mode === "signup" ? "/api/auth/signup" : "/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify(mode === "signup" ? { name, email, password } : { email, password }),
+      });
+      setToken(data.token);
+      setAuthError("");
+      await loadSession(data.user);
+      setScreen("dashboard");
+    } catch (err) {
+      setAuthError(err.message || "Something went wrong");
+    }
+  }
+
+  function handleLogout() {
+    setToken(null);
+    setUser(null);
+    setAccountType("demo");
+    setDemoBalance(10000);
+    setRealBalance(0);
+    setTrades([]);
+    setPayments([]);
+    setScreen("auth");
+  }
+
+  if (booting) return null;
+
+  const balance = accountType === "demo" ? demoBalance : realBalance;
+
+  if (screen === "dashboard") {
+    return (
+      <TradingDashboard
+        onLogout={handleLogout}
+        onNavigate={(next) => setScreen(next)}
+        balance={balance}
+        demoBalance={demoBalance}
+        realBalance={realBalance}
+        accountType={accountType}
+        onSwitchAccount={setAccountType}
+        onBalanceSet={setAccountBalance}
+        trades={trades}
+        onAddTrade={addTrade}
+        onResolveTrade={resolveTrade}
+        user={user}
+      />
+    );
+  }
+  if (screen === "deposit") {
+    return (
+      <DepositScreen
+        onBack={() => setScreen("dashboard")}
+        onComplete={() => setScreen("dashboard")}
+        onBalanceSet={(amount) => setRealBalance(amount)}
+        onAddPayment={addPayment}
+      />
+    );
+  }
+  if (screen === "withdraw") {
+    return (
+      <WithdrawScreen
+        onBack={() => setScreen("dashboard")}
+        onComplete={() => setScreen("dashboard")}
+        balance={realBalance}
+        onBalanceSet={(amount) => setRealBalance(amount)}
+        onAddPayment={addPayment}
+      />
+    );
+  }
+  if (screen === "history") {
+    return (
+      <HistoryScreen
+        trades={trades.filter((t) => t.status === "won" || t.status === "lost")}
+        payments={payments}
+        onBack={() => setScreen("dashboard")}
+      />
+    );
+  }
+  if (screen === "about") {
+    return <AboutScreen onBack={() => setScreen("dashboard")} />;
+  }
+  if (screen === "livechat") {
+    return <LiveChatScreen onBack={() => setScreen("dashboard")} />;
+  }
+  if (screen === "refer") {
+    return <ReferScreen onBack={() => setScreen("dashboard")} referralCode={user?.referralCode || ""} />;
+  }
+  if (screen === "settings") {
+    return (
+      <AccountSettingsScreen
+        onBack={() => setScreen("dashboard")}
+        user={user}
+        onUpdateUser={onUpdateUser}
+      />
+    );
+  }
+  return (
+    <AuthScreen
+      onAuth={handleAuth}
+      authError={authError}
+      clearAuthError={() => setAuthError("")}
+    />
+  );
+}
