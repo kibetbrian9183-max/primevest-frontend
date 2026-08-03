@@ -505,6 +505,13 @@ function TradingDashboard({
   const [runningSide, setRunningSide] = useState(null);
   const [stopRequested, setStopRequested] = useState(false);
   const [sessionStats, setSessionStats] = useState({ trades: 0, wins: 0, losses: 0, net: 0 });
+  const [tickingDigit, setTickingDigit] = useState(null); // digit currently flashing while a trade resolves
+  const tickIntervalRef = useRef(null);
+  const [revealedResult, setRevealedResult] = useState(null); // { digit, won } shown briefly after resolving
+
+  useEffect(() => {
+    return () => clearInterval(tickIntervalRef.current);
+  }, []);
 
   const balanceRef = useRef(balance);
   useEffect(() => {
@@ -643,11 +650,22 @@ function TradingDashboard({
       return;
     }
 
+    // Start a random "spinning tick" highlight across the digit row while
+    // we wait for the result — cleared and replaced by the reveal color
+    // (green/red) the moment the real result comes back.
+    setRevealedResult(null);
+    clearInterval(tickIntervalRef.current);
+    tickIntervalRef.current = setInterval(() => {
+      setTickingDigit(Math.floor(Math.random() * 10));
+    }, 120);
+
     window.setTimeout(async () => {
       let result;
       try {
         result = await backendApi(`/api/trades/${id}/resolve`, { method: "PATCH" });
       } catch (err) {
+        clearInterval(tickIntervalRef.current);
+        setTickingDigit(null);
         runningRef.current = false;
         setAutoRunning(false);
         setStopRequested(false);
@@ -657,6 +675,11 @@ function TradingDashboard({
       }
 
       const { won, resultDigit, payout: payoutAmt, balance: newBalance } = result;
+      clearInterval(tickIntervalRef.current);
+      setTickingDigit(null);
+      setRevealedResult({ digit: resultDigit, won });
+      window.setTimeout(() => setRevealedResult((r) => (r?.digit === resultDigit ? null : r)), 1800);
+
       balanceRef.current = newBalance;
       onBalanceSet?.(accountType, newBalance);
 
@@ -1233,6 +1256,9 @@ function TradingDashboard({
                   const selected = digit === selectedDigit;
                   const highest = pct === Math.max(...digitStats);
                   const interactive = market.needsDigit && !autoRunning;
+                  const isTicking = tickingDigit === digit;
+                  const isRevealed = revealedResult?.digit === digit;
+                  const revealColor = isRevealed ? (revealedResult.won ? c.green : c.red) : null;
                   return (
                     <button
                       key={digit}
@@ -1242,13 +1268,27 @@ function TradingDashboard({
                       style={{ cursor: interactive ? "pointer" : "default" }}
                     >
                       <span
-                        className="flex items-center justify-center rounded-full font-bold text-base transition"
+                        className="flex items-center justify-center rounded-full font-bold text-base transition-all"
                         style={{
                           width: 46,
                           height: 46,
-                          background: selected && interactive ? c.amber : c.elevated,
-                          color: selected && interactive ? "#181205" : c.text,
-                          border: `1px solid ${selected && interactive ? c.amber : c.border}`,
+                          background: revealColor
+                            ? revealColor
+                            : isTicking
+                            ? c.amber
+                            : selected && interactive
+                            ? c.amber
+                            : c.elevated,
+                          color: revealColor || isTicking || (selected && interactive) ? "#181205" : c.text,
+                          border: `2px solid ${
+                            revealColor || (isTicking ? c.amber : selected && interactive ? c.amber : c.border)
+                          }`,
+                          boxShadow: isTicking
+                            ? `0 0 10px ${c.amber}`
+                            : revealColor
+                            ? `0 0 12px ${revealColor}`
+                            : "none",
+                          transform: isTicking || revealColor ? "scale(1.08)" : "scale(1)",
                         }}
                       >
                         {digit}
