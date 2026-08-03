@@ -3685,17 +3685,25 @@ export default function App() {
     }
   }
 
-  // Restore a saved session (if any) once, on first load.
+  // Restore a saved session (if any) once, on first load. Render's free
+  // tier can take 50+ seconds to wake from idle, so this waits generously
+  // before giving up — but it does give up, rather than spinning forever
+  // if the backend is genuinely unreachable.
   useEffect(() => {
     (async () => {
       const token = getToken();
       if (token) {
         try {
-          const { user: profile } = await backendApi("/api/auth/me");
+          const { user: profile } = await Promise.race([
+            backendApi("/api/auth/me"),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 45000)),
+          ]);
           await loadSession(profile);
           setScreen("dashboard");
-        } catch {
-          setToken(null); // expired/invalid — fall back to the login screen
+        } catch (err) {
+          if (err.message !== "timeout") setToken(null); // expired/invalid token — clear it
+          // On timeout, leave the token in place: the backend may just be
+          // slow to wake, not actually rejecting the session.
         }
       }
       setBooting(false);
@@ -3740,7 +3748,22 @@ export default function App() {
     setScreen("auth");
   }
 
-  if (booting) return null;
+  if (booting) {
+    return (
+      <div
+        className="min-h-screen w-full flex flex-col items-center justify-center gap-4"
+        style={{ background: c.bg, color: c.text }}
+      >
+        <div
+          className="w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-lg"
+          style={{ background: c.amber, color: "#181205" }}
+        >
+          P
+        </div>
+        <Loader2 size={22} className="animate-spin" style={{ color: c.textDim }} />
+      </div>
+    );
+  }
 
   const balance = accountType === "demo" ? demoBalance : realBalance;
 
