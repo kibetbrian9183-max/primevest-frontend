@@ -1259,12 +1259,16 @@ function TradingDashboard({
                   const isTicking = tickingDigit === digit;
                   const isRevealed = revealedResult?.digit === digit;
                   const revealColor = isRevealed ? (revealedResult.won ? c.green : c.red) : null;
+                  // The persistent prediction marker (ring + triangle) is
+                  // distinct from the transient ticking/reveal states so
+                  // they never visually collide.
+                  const showSelectionMark = selected && interactive && !isTicking && !revealColor;
                   return (
                     <button
                       key={digit}
                       onClick={() => interactive && setSelectedDigit(digit)}
                       disabled={!interactive}
-                      className="flex-shrink-0 flex flex-col items-center gap-1.5"
+                      className="flex-shrink-0 flex flex-col items-center gap-1"
                       style={{ cursor: interactive ? "pointer" : "default" }}
                     >
                       <span
@@ -1272,27 +1276,30 @@ function TradingDashboard({
                         style={{
                           width: 46,
                           height: 46,
-                          background: revealColor
-                            ? revealColor
-                            : isTicking
-                            ? c.amber
-                            : selected && interactive
-                            ? c.amber
-                            : c.elevated,
-                          color: revealColor || isTicking || (selected && interactive) ? "#181205" : c.text,
+                          background: revealColor ? revealColor : isTicking ? c.amber : c.elevated,
+                          color: revealColor || isTicking ? "#181205" : c.text,
                           border: `2px solid ${
-                            revealColor || (isTicking ? c.amber : selected && interactive ? c.amber : c.border)
+                            revealColor || (isTicking ? c.amber : showSelectionMark ? c.amber : c.border)
                           }`,
                           boxShadow: isTicking
                             ? `0 0 10px ${c.amber}`
                             : revealColor
-                            ? `0 0 12px ${revealColor}`
+                            ? `0 0 20px 2px ${revealColor}`
                             : "none",
                           transform: isTicking || revealColor ? "scale(1.08)" : "scale(1)",
                         }}
                       >
                         {digit}
                       </span>
+                      <span
+                        style={{
+                          width: 0,
+                          height: 0,
+                          borderLeft: "4px solid transparent",
+                          borderRight: "4px solid transparent",
+                          borderTop: `5px solid ${showSelectionMark ? c.amber : "transparent"}`,
+                        }}
+                      />
                       <span
                         className="text-[11px] font-mono tabular-nums transition-all duration-700 ease-out"
                         style={{
