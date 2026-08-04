@@ -55,6 +55,7 @@ import {
   Image as ImageIcon,
   UserCheck,
   RefreshCw,
+  Upload,
 } from "lucide-react";
 
 
@@ -3424,6 +3425,63 @@ function SettingsRow({ icon: Icon, label, badge, expanded, onToggle, children })
   );
 }
 
+function KycInput({ label, optional, ...props }) {
+  return (
+    <div>
+      <label className="text-[11px] font-bold tracking-wide mb-1.5 block" style={{ color: c.textDim }}>
+        {label} {optional && <span className="font-normal normal-case" style={{ color: c.textFaint }}>(optional)</span>}
+      </label>
+      <input
+        {...props}
+        className="w-full h-12 rounded-2xl px-4 text-sm outline-none"
+        style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, color: c.text }}
+      />
+    </div>
+  );
+}
+
+function KycUploadBox({ label, hint, file, onPick }) {
+  const inputRef = useRef(null);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        className="w-full flex flex-col items-center justify-center gap-3 rounded-2xl py-8 px-4"
+        style={{
+          border: `1.5px dashed ${file ? c.green : c.borderStrong}`,
+          background: file ? c.greenDim : "transparent",
+        }}
+      >
+        <div
+          className="w-11 h-11 rounded-xl flex items-center justify-center"
+          style={{ background: c.surfaceAlt }}
+        >
+          {file ? (
+            <Check size={20} style={{ color: c.green }} />
+          ) : (
+            <Upload size={20} style={{ color: c.textDim }} />
+          )}
+        </div>
+        <div className="text-center">
+          <div className="text-sm font-bold">{file ? file.name : label}</div>
+          <div className="text-xs mt-0.5" style={{ color: c.textFaint }}>
+            {file ? "Tap to replace" : "PDF, JPG, or PNG — max 10MB"}
+          </div>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png"
+          className="hidden"
+          onChange={(e) => onPick(e.target.files?.[0])}
+        />
+      </button>
+      <p className="text-xs italic text-center mt-1.5" style={{ color: c.textFaint }}>{hint}</p>
+    </div>
+  );
+}
+
 function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
   const [open, setOpen] = useState(null);
   const [name, setName] = useState(user?.name || "");
@@ -3432,7 +3490,25 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
   const [pwError, setPwError] = useState("");
   const [pwSaved, setPwSaved] = useState(false);
   const [twoFactor, setTwoFactor] = useState(!!user?.twoFactorEnabled);
-  const [idForm, setIdForm] = useState({ legalName: "", idNumber: "" });
+  const [idForm, setIdForm] = useState({
+    firstName: "",
+    lastName: "",
+    contactEmail: user?.email || "",
+    contactPhone: "",
+    middleName: "",
+    dateOfBirth: "",
+    idType: "National ID",
+    idNumber: "",
+    issuingCountry: "Kenya",
+    addressLine: "",
+    city: "",
+    stateCounty: "",
+    postalCode: "",
+    country: "Kenya",
+  });
+  const [idFiles, setIdFiles] = useState({ idFront: null, idBack: null, selfie: null });
+  const [idSubmitting, setIdSubmitting] = useState(false);
+  const [idError, setIdError] = useState("");
   const identityStatus = user?.identityStatus || "unverified";
 
   const [nameError, setNameError] = useState("");
@@ -3500,17 +3576,61 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
     }
   }
 
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      if (file.size > 10 * 1024 * 1024) {
+        reject(new Error(`${file.name} is over 10MB`));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error(`Couldn't read ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleFilePick(key, file) {
+    if (!file) return;
+    setIdError("");
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setIdFiles((f) => ({ ...f, [key]: { name: file.name, dataUrl } }));
+    } catch (err) {
+      setIdError(err.message);
+    }
+  }
+
   async function submitIdentity(e) {
     e.preventDefault();
-    if (!idForm.legalName.trim() || !idForm.idNumber.trim()) return;
+    setIdError("");
+
+    const required = ["firstName", "lastName", "dateOfBirth", "idType", "idNumber", "issuingCountry"];
+    const missingField = required.find((k) => !idForm[k]?.trim());
+    if (missingField) {
+      setIdError("Fill in all required identification fields");
+      return;
+    }
+    if (!idFiles.idFront || !idFiles.idBack || !idFiles.selfie) {
+      setIdError("Upload the front and back of your ID and a selfie holding it");
+      return;
+    }
+
+    setIdSubmitting(true);
     try {
       const { user: updated } = await backendApi("/api/auth/me/verify-identity", {
         method: "POST",
-        body: JSON.stringify(idForm),
+        body: JSON.stringify({
+          ...idForm,
+          idFront: idFiles.idFront.dataUrl,
+          idBack: idFiles.idBack.dataUrl,
+          selfie: idFiles.selfie.dataUrl,
+        }),
       });
       onUpdateUser?.({ identityStatus: updated.identityStatus });
-    } catch {
-      // form stays as-is; user can retry
+    } catch (err) {
+      setIdError(err.message || "Something went wrong — try again");
+    } finally {
+      setIdSubmitting(false);
     }
   }
 
@@ -3655,32 +3775,176 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
             ) : identityStatus === "verified" ? (
               <p className="text-sm" style={{ color: c.textDim }}>Your identity has been verified.</p>
             ) : (
-              <form onSubmit={submitIdentity} className="flex flex-col gap-3">
-                <Field icon={User}>
-                  <input
-                    value={idForm.legalName}
-                    onChange={(e) => setIdForm((f) => ({ ...f, legalName: e.target.value }))}
-                    placeholder="Full legal name"
-                    className="flex-1 outline-none text-sm bg-transparent"
-                    style={{ color: c.text }}
-                  />
-                </Field>
-                <Field icon={ShieldCheck}>
-                  <input
-                    value={idForm.idNumber}
-                    onChange={(e) => setIdForm((f) => ({ ...f, idNumber: e.target.value }))}
-                    placeholder="National ID / Passport number"
-                    className="flex-1 outline-none text-sm bg-transparent"
-                    style={{ color: c.text }}
-                  />
-                </Field>
+              <form onSubmit={submitIdentity} className="flex flex-col gap-5">
+                <div>
+                  <div className="text-xs font-bold tracking-wide mb-2" style={{ color: c.textDim }}>
+                    FULL LEGAL NAME
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <KycInput
+                      label="First Name"
+                      value={idForm.firstName}
+                      onChange={(e) => setIdForm((f) => ({ ...f, firstName: e.target.value }))}
+                      placeholder="First Name"
+                    />
+                    <KycInput
+                      label="Last Name"
+                      value={idForm.lastName}
+                      onChange={(e) => setIdForm((f) => ({ ...f, lastName: e.target.value }))}
+                      placeholder="Last Name"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-bold tracking-wide mb-2" style={{ color: c.green }}>
+                    CONTACT
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <KycInput
+                      label="Email"
+                      type="email"
+                      value={idForm.contactEmail}
+                      onChange={(e) => setIdForm((f) => ({ ...f, contactEmail: e.target.value }))}
+                      placeholder="Email address"
+                    />
+                    <KycInput
+                      label="Phone"
+                      value={idForm.contactPhone}
+                      onChange={(e) => setIdForm((f) => ({ ...f, contactPhone: e.target.value }))}
+                      placeholder="07xx xxx xxx"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-bold tracking-wide mb-2" style={{ color: c.green }}>
+                    IDENTIFICATION
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <KycInput
+                      label="Middle Name"
+                      optional
+                      value={idForm.middleName}
+                      onChange={(e) => setIdForm((f) => ({ ...f, middleName: e.target.value }))}
+                      placeholder="Middle name as on ID"
+                    />
+                    <KycInput
+                      label="Date of Birth"
+                      type="date"
+                      value={idForm.dateOfBirth}
+                      onChange={(e) => setIdForm((f) => ({ ...f, dateOfBirth: e.target.value }))}
+                    />
+                    <div>
+                      <label className="text-[11px] font-bold tracking-wide mb-1.5 block" style={{ color: c.textDim }}>
+                        ID TYPE
+                      </label>
+                      <select
+                        value={idForm.idType}
+                        onChange={(e) => setIdForm((f) => ({ ...f, idType: e.target.value }))}
+                        className="w-full h-12 rounded-2xl px-4 text-sm outline-none font-semibold"
+                        style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, color: c.text }}
+                      >
+                        <option>National ID</option>
+                        <option>Passport</option>
+                        <option>Driver's License</option>
+                        <option>Military ID</option>
+                      </select>
+                    </div>
+                    <KycInput
+                      label="ID Number"
+                      value={idForm.idNumber}
+                      onChange={(e) => setIdForm((f) => ({ ...f, idNumber: e.target.value }))}
+                      placeholder="As shown on document"
+                    />
+                    <KycInput
+                      label="Issuing Country"
+                      value={idForm.issuingCountry}
+                      onChange={(e) => setIdForm((f) => ({ ...f, issuingCountry: e.target.value }))}
+                      placeholder="Kenya"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-bold tracking-wide mb-2" style={{ color: c.green }}>
+                    ADDRESS <span className="font-normal normal-case" style={{ color: c.textFaint }}>(optional)</span>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <KycInput
+                      label="Address Line"
+                      value={idForm.addressLine}
+                      onChange={(e) => setIdForm((f) => ({ ...f, addressLine: e.target.value }))}
+                      placeholder="Street, estate, building"
+                    />
+                    <KycInput
+                      label="City"
+                      value={idForm.city}
+                      onChange={(e) => setIdForm((f) => ({ ...f, city: e.target.value }))}
+                      placeholder="Nairobi"
+                    />
+                    <KycInput
+                      label="State / County"
+                      value={idForm.stateCounty}
+                      onChange={(e) => setIdForm((f) => ({ ...f, stateCounty: e.target.value }))}
+                      placeholder="County"
+                    />
+                    <KycInput
+                      label="Postal Code"
+                      value={idForm.postalCode}
+                      onChange={(e) => setIdForm((f) => ({ ...f, postalCode: e.target.value }))}
+                      placeholder="00100"
+                    />
+                    <KycInput
+                      label="Country"
+                      value={idForm.country}
+                      onChange={(e) => setIdForm((f) => ({ ...f, country: e.target.value }))}
+                      placeholder="Kenya"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-bold tracking-wide mb-2" style={{ color: c.green }}>
+                    DOCUMENTS REQUIRED
+                  </div>
+                  <div className="flex flex-col gap-4">
+                    <KycUploadBox
+                      label="Upload ID / Passport (Front)"
+                      hint="Upload a clear photo or scan of the front"
+                      file={idFiles.idFront}
+                      onPick={(file) => handleFilePick("idFront", file)}
+                    />
+                    <KycUploadBox
+                      label="Upload ID / Passport (Back)"
+                      hint="Upload a clear photo or scan of the back"
+                      file={idFiles.idBack}
+                      onPick={(file) => handleFilePick("idBack", file)}
+                    />
+                    <KycUploadBox
+                      label="Selfie holding your ID"
+                      hint="A photo of you holding the document for verification"
+                      file={idFiles.selfie}
+                      onPick={(file) => handleFilePick("selfie", file)}
+                    />
+                  </div>
+                </div>
+
+                {idError && (
+                  <div className="text-xs font-medium text-center" style={{ color: c.red }}>{idError}</div>
+                )}
+
                 <button
                   type="submit"
-                  className="h-11 rounded-xl text-sm font-bold"
-                  style={{ background: c.amber, color: "#181205" }}
+                  disabled={idSubmitting}
+                  className="h-13 rounded-2xl text-sm font-bold"
+                  style={{ height: 52, background: c.green, color: "#06210F", opacity: idSubmitting ? 0.7 : 1 }}
                 >
-                  Submit for review
+                  {idSubmitting ? "Submitting…" : "Submit Documents for Verification"}
                 </button>
+                <p className="text-xs text-center" style={{ color: c.textFaint }}>
+                  By clicking submit, you agree to our Terms of Service and Privacy Policy.
+                </p>
               </form>
             )}
           </SettingsRow>
