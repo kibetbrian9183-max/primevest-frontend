@@ -56,6 +56,8 @@ import {
   UserCheck,
   RefreshCw,
   Upload,
+  Sparkles,
+  Search,
 } from "lucide-react";
 
 
@@ -302,6 +304,211 @@ function PositionCard({ pos }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// AI ENTRY SCANNER — a simulated market scanner for people who'd rather not
+// pick a symbol/digit manually. It's a randomized pick dressed up with a
+// scanning animation, not a real predictive model — this game has no
+// exploitable pattern, same as everywhere else in this app.
+// ---------------------------------------------------------------------------
+const SCANNER_MARKETS = [
+  { id: "matches", label: "Matches/Differs" },
+  { id: "evenodd", label: "Even/Odd" },
+  { id: "overunder", label: "Over/Under" },
+];
+const STEPS_PER_SYMBOL = 3;
+
+function AIScannerModal({ onClose, onLoadMarket }) {
+  const [marketChoice, setMarketChoice] = useState("evenodd");
+  const [scanning, setScanning] = useState(false);
+  const [progress, setProgress] = useState(0); // 0..totalSteps
+  const [currentSymbol, setCurrentSymbol] = useState(null);
+  const [result, setResult] = useState(null);
+  const timerRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  const totalSteps = SYMBOLS.length * STEPS_PER_SYMBOL;
+
+  function startScan() {
+    clearTimeout(timerRef.current);
+    setResult(null);
+    setScanning(true);
+    setProgress(0);
+    let step = 0;
+
+    function tick() {
+      const symbolIdx = Math.min(Math.floor(step / STEPS_PER_SYMBOL), SYMBOLS.length - 1);
+      setCurrentSymbol(SYMBOLS[symbolIdx]);
+      step += 1;
+      setProgress(step);
+
+      if (step >= totalSteps) {
+        const winner = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+        const digit = Math.floor(Math.random() * 10);
+        const confidence = 68 + Math.floor(Math.random() * 24); // 68-91%, deliberately not near 100
+
+        let side, sideLabel;
+        if (marketChoice === "evenodd") {
+          side = Math.random() < 0.5 ? "even" : "odd";
+          sideLabel = side === "even" ? "Even" : "Odd";
+        } else if (marketChoice === "matches") {
+          side = Math.random() < 0.5 ? "matches" : "differs";
+          sideLabel = side === "matches" ? "Matches" : "Differs";
+        } else {
+          side = Math.random() < 0.5 ? "over" : "under";
+          sideLabel = side === "over" ? "Over" : "Under";
+        }
+
+        setResult({ symbol: winner, side, sideLabel, digit, confidence });
+        setScanning(false);
+        return;
+      }
+      timerRef.current = setTimeout(tick, 220);
+    }
+    tick();
+  }
+
+  const marketLabel = SCANNER_MARKETS.find((m) => m.id === marketChoice)?.label;
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center px-5">
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.65)" }} onClick={onClose} />
+      <div
+        className="relative w-full max-w-sm rounded-3xl border overflow-hidden"
+        style={{ background: c.surface, borderColor: c.border, boxShadow: "0 24px 60px rgba(0,0,0,0.5)" }}
+      >
+        <div className="flex items-center gap-3 px-5 py-4 border-b" style={{ borderColor: c.border }}>
+          <div
+            className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: "linear-gradient(135deg, #9333EA, #4F46E5)" }}
+          >
+            <Sparkles size={17} style={{ color: "#fff" }} />
+          </div>
+          <span className="text-base font-bold flex-1">Entry Scanner</span>
+          <button onClick={onClose} aria-label="Close">
+            <X size={18} style={{ color: c.textDim }} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 max-h-[75vh] overflow-y-auto">
+          <p className="text-sm leading-relaxed mb-4" style={{ color: c.textDim }}>
+            Pick the market category you want to scan. The scanner checks every
+            volatility index and suggests an entry based on the current last-digit
+            spread — not a guarantee, just a starting point.
+          </p>
+
+          <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
+            Market
+          </label>
+          <select
+            value={marketChoice}
+            onChange={(e) => {
+              setMarketChoice(e.target.value);
+              setResult(null);
+            }}
+            disabled={scanning}
+            className="w-full h-12 rounded-2xl px-4 text-sm font-semibold outline-none mb-4"
+            style={{ background: c.bg, border: `1px solid ${c.border}`, color: c.text }}
+          >
+            {SCANNER_MARKETS.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+
+          {(scanning || result) && (
+            <div className="mb-4">
+              <div className="flex items-center justify-between text-xs font-semibold mb-1.5">
+                <span style={{ color: "#C77DFF" }}>
+                  {result ? result.symbol.label : currentSymbol?.label}
+                </span>
+                <span style={{ color: c.textFaint }}>{progress}/{totalSteps}</span>
+              </div>
+              <div className="h-1.5 rounded-full overflow-hidden mb-2" style={{ background: c.elevated }}>
+                <div
+                  className="h-full rounded-full transition-all duration-200"
+                  style={{
+                    width: `${(progress / totalSteps) * 100}%`,
+                    background: "linear-gradient(90deg, #9333EA, #EC4899)",
+                  }}
+                />
+              </div>
+              {scanning && (
+                <div className="flex items-center gap-2 text-sm" style={{ color: c.textDim }}>
+                  <Loader2 size={14} className="animate-spin" />
+                  Scanning {currentSymbol?.label}…
+                </div>
+              )}
+            </div>
+          )}
+
+          {result && !scanning && (
+            <div
+              className="rounded-2xl border p-4 mb-4"
+              style={{ background: c.elevated, borderColor: c.border }}
+            >
+              <div className="text-xs font-semibold mb-2" style={{ color: c.textFaint }}>
+                SUGGESTED ENTRY
+              </div>
+              <div className="text-base font-bold mb-1">{result.symbol.label}</div>
+              <div className="text-sm mb-2" style={{ color: c.textDim }}>
+                {marketLabel} ·{" "}
+                <span style={{ color: c.amber, fontWeight: 700 }}>{result.sideLabel}</span>
+                {(marketChoice === "matches" || marketChoice === "overunder") && (
+                  <> · Digit {result.digit}</>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: c.surfaceAlt }}>
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${result.confidence}%`, background: c.green }}
+                  />
+                </div>
+                <span className="text-xs font-bold font-mono" style={{ color: c.green }}>
+                  {result.confidence}%
+                </span>
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={startScan}
+            disabled={scanning}
+            className="w-full h-12 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mb-2.5"
+            style={{
+              background: scanning ? c.elevated : "linear-gradient(90deg, #7C3AED, #4F46E5)",
+              color: scanning ? c.textDim : "#fff",
+            }}
+          >
+            {scanning ? (
+              <>
+                <Loader2 size={15} className="animate-spin" /> Deep Scanning…
+              </>
+            ) : (
+              <>
+                <Search size={15} /> {result ? "Scan Again" : "Deep Scan for Best Market"}
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={() => result && onLoadMarket(result, marketChoice)}
+            disabled={!result || scanning}
+            className="w-full h-12 rounded-2xl text-sm font-bold"
+            style={{
+              background: result && !scanning ? c.amber : c.elevated,
+              color: result && !scanning ? "#181205" : c.textFaint,
+              cursor: result && !scanning ? "pointer" : "not-allowed",
+            }}
+          >
+            Load This Market
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PositionsPanel({ trades, posTab, setPosTab }) {
   const open = trades.filter((t) => t.status === "open");
   const closed = trades.filter((t) => t.status === "won" || t.status === "lost");
@@ -480,6 +687,7 @@ function TradingDashboard({
   const [resultAlert, setResultAlert] = useState(null); // { type: "win" | "loss" | "error", title, message }
   const [notifications, setNotifications] = useState([]);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const [aiScannerOpen, setAiScannerOpen] = useState(false);
 
   useEffect(() => {
     backendApi("/api/notifications")
@@ -533,6 +741,15 @@ function TradingDashboard({
     const freshData = makeInitialSeries(next.base, 80);
     setData(freshData);
     openingPriceRef.current = freshData[0].price;
+  }
+
+  function handleLoadScannedMarket(result, marketChoice) {
+    if (autoRunning) return;
+    switchSymbol(result.symbol.id);
+    setActiveTab(marketChoice);
+    if (marketChoice !== "evenodd") setSelectedDigit(result.digit);
+    setAiScannerOpen(false);
+    setView("trade");
   }
 
   // simulate a live-ish feed, scaled to the active symbol's volatility
@@ -796,6 +1013,15 @@ function TradingDashboard({
   function requestStopRun() {
     runningRef.current = false;
     setStopRequested(true);
+  }
+
+  function loadScannedMarket(result, marketChoice) {
+    if (autoRunning) return; // don't yank the market out from under a live session
+    switchSymbol(result.symbol.id);
+    setActiveTab(marketChoice);
+    if (marketChoice !== "evenodd") setSelectedDigit(result.digit);
+    setAiScannerOpen(false);
+    setView("trade");
   }
 
   return (
@@ -1590,7 +1816,7 @@ function TradingDashboard({
           return (
             <button
               key={label}
-              onClick={() => id !== "ai" && setView(id)}
+              onClick={() => (id === "ai" ? setAiScannerOpen(true) : setView(id))}
               className="flex flex-col items-center gap-1"
             >
               <Icon size={21} style={{ color: active ? c.amber : c.textDim }} />
@@ -1601,6 +1827,19 @@ function TradingDashboard({
           );
         })}
       </nav>
+
+      {/* ================= AI ENTRY SCANNER ================= */}
+      {aiScannerOpen && (
+        <AIScannerModal
+          onClose={() => setAiScannerOpen(false)}
+          onLoadMarket={handleLoadScannedMarket}
+        />
+      )}
+
+      {/* ================= AI ENTRY SCANNER ================= */}
+      {aiScannerOpen && (
+        <AIScannerModal onClose={() => setAiScannerOpen(false)} onLoadMarket={loadScannedMarket} />
+      )}
 
       {/* ================= TRADE RESULT ALERT ================= */}
       {resultAlert && (
