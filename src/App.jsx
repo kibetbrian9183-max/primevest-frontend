@@ -3728,7 +3728,6 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
   const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
   const [pwError, setPwError] = useState("");
   const [pwSaved, setPwSaved] = useState(false);
-  const [twoFactor, setTwoFactor] = useState(!!user?.twoFactorEnabled);
   const [idForm, setIdForm] = useState({
     firstName: "",
     lastName: "",
@@ -3801,18 +3800,76 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
     }
   }
 
-  async function toggleTwoFactor() {
-    const next = !twoFactor;
-    setTwoFactor(next);
+  // "off" | "setup" (QR shown, awaiting code) | "on"
+  const [twoFactorStage, setTwoFactorStage] = useState(user?.twoFactorEnabled ? "on" : "off");
+  const [qrData, setQrData] = useState(null); // { qrCodeDataUrl, secret }
+  const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [twoFactorError, setTwoFactorError] = useState("");
+  const [twoFactorBusy, setTwoFactorBusy] = useState(false);
+  const [disablePassword, setDisablePassword] = useState("");
+  const [showDisableForm, setShowDisableForm] = useState(false);
+
+  async function startTwoFactorSetup() {
+    setTwoFactorError("");
+    setTwoFactorBusy(true);
     try {
-      const { user: updated } = await backendApi("/api/auth/me", {
-        method: "PATCH",
-        body: JSON.stringify({ twoFactorEnabled: next }),
+      const data = await backendApi("/api/auth/me/2fa/setup", { method: "POST" });
+      setQrData(data);
+      setTwoFactorStage("setup");
+    } catch (err) {
+      setTwoFactorError(err.message);
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  }
+
+  async function confirmTwoFactorSetup(e) {
+    e.preventDefault();
+    if (!twoFactorCode.trim()) return;
+    setTwoFactorError("");
+    setTwoFactorBusy(true);
+    try {
+      const { user: updated } = await backendApi("/api/auth/me/2fa/verify", {
+        method: "POST",
+        body: JSON.stringify({ code: twoFactorCode.trim() }),
       });
       onUpdateUser?.({ twoFactorEnabled: updated.twoFactorEnabled });
-    } catch {
-      setTwoFactor(!next); // revert on failure
+      setTwoFactorStage("on");
+      setTwoFactorCode("");
+      setQrData(null);
+    } catch (err) {
+      setTwoFactorError(err.message);
+    } finally {
+      setTwoFactorBusy(false);
     }
+  }
+
+  async function disableTwoFactor(e) {
+    e.preventDefault();
+    if (!disablePassword.trim()) return;
+    setTwoFactorError("");
+    setTwoFactorBusy(true);
+    try {
+      const { user: updated } = await backendApi("/api/auth/me/2fa/disable", {
+        method: "POST",
+        body: JSON.stringify({ password: disablePassword }),
+      });
+      onUpdateUser?.({ twoFactorEnabled: updated.twoFactorEnabled });
+      setTwoFactorStage("off");
+      setDisablePassword("");
+      setShowDisableForm(false);
+    } catch (err) {
+      setTwoFactorError(err.message);
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  }
+
+  function cancelTwoFactorSetup() {
+    setTwoFactorStage("off");
+    setQrData(null);
+    setTwoFactorCode("");
+    setTwoFactorError("");
   }
 
   function readFileAsDataUrl(file) {
@@ -3958,7 +4015,7 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
             icon={Smartphone}
             label="Two-Factor Auth (2FA)"
             badge={
-              twoFactor && (
+              twoFactorStage === "on" && (
                 <span
                   className="text-[10px] font-bold px-1.5 py-0.5 rounded"
                   style={{ background: c.greenDim, color: c.green }}
@@ -3970,24 +4027,175 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
             expanded={open === "2fa"}
             onToggle={() => toggle("2fa")}
           >
-            <div className="flex items-center justify-between rounded-xl border p-4" style={{ borderColor: c.border }}>
-              <div>
-                <div className="text-sm font-bold">SMS-based 2FA</div>
-                <div className="text-xs mt-0.5" style={{ color: c.textDim }}>
-                  Add an extra step when logging in
+            {twoFactorStage === "off" && (
+              <div className="flex flex-col gap-4">
+                <div
+                  className="flex items-center justify-between rounded-2xl p-4"
+                  style={{ background: c.elevated }}
+                >
+                  <div className="flex items-center gap-3">
+                    <Shield size={18} style={{ color: c.textDim }} />
+                    <div>
+                      <div className="text-sm font-bold">2FA is Disabled</div>
+                      <div className="text-xs mt-0.5" style={{ color: c.textDim }}>
+                        Enable 2FA for extra security
+                      </div>
+                    </div>
+                  </div>
+                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: c.textFaint }} />
                 </div>
+
+                <div className="rounded-2xl border p-4" style={{ borderColor: c.border }}>
+                  <div className="text-sm font-bold mb-3">How it works:</div>
+                  <ol className="flex flex-col gap-2 text-xs" style={{ color: c.textDim }}>
+                    <li>1. Download Google Authenticator or any TOTP app</li>
+                    <li>2. Scan the QR code or enter the secret key manually</li>
+                    <li>3. Enter the 6-digit code from the app to verify</li>
+                    <li>4. Each time you login, you'll need to enter a code</li>
+                  </ol>
+                </div>
+
+                {twoFactorError && (
+                  <div className="text-xs font-medium" style={{ color: c.red }}>{twoFactorError}</div>
+                )}
+
+                <button
+                  onClick={startTwoFactorSetup}
+                  disabled={twoFactorBusy}
+                  className="h-12 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
+                  style={{ background: "linear-gradient(90deg, #16C784, #22D98A)", color: "#06210F" }}
+                >
+                  {twoFactorBusy ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <Smartphone size={15} />
+                  )}
+                  Enable 2FA
+                </button>
               </div>
-              <button
-                onClick={toggleTwoFactor}
-                className="relative w-11 h-6 rounded-full transition-colors flex-shrink-0"
-                style={{ background: twoFactor ? c.green : c.borderStrong }}
-              >
-                <span
-                  className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform"
-                  style={{ transform: twoFactor ? "translateX(22px)" : "translateX(2px)" }}
-                />
-              </button>
-            </div>
+            )}
+
+            {twoFactorStage === "setup" && qrData && (
+              <form onSubmit={confirmTwoFactorSetup} className="flex flex-col gap-4">
+                <p className="text-sm" style={{ color: c.textDim }}>
+                  Scan this QR code with Google Authenticator (or any TOTP app), then enter the
+                  6-digit code it shows.
+                </p>
+                <div className="flex justify-center bg-white rounded-2xl p-4">
+                  <img src={qrData.qrCodeDataUrl} alt="2FA QR code" style={{ width: 180, height: 180 }} />
+                </div>
+                <div>
+                  <div className="text-xs font-semibold mb-1" style={{ color: c.textDim }}>
+                    Can't scan? Enter this key manually:
+                  </div>
+                  <div
+                    className="text-xs font-mono px-3 py-2 rounded-xl break-all"
+                    style={{ background: c.elevated, color: c.text }}
+                  >
+                    {qrData.secret}
+                  </div>
+                </div>
+                <Field icon={ShieldCheck}>
+                  <input
+                    value={twoFactorCode}
+                    onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="6-digit code"
+                    inputMode="numeric"
+                    className="flex-1 outline-none text-sm bg-transparent tracking-widest"
+                    style={{ color: c.text }}
+                  />
+                </Field>
+                {twoFactorError && (
+                  <div className="text-xs font-medium" style={{ color: c.red }}>{twoFactorError}</div>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={cancelTwoFactorSetup}
+                    className="flex-1 h-11 rounded-xl text-sm font-bold"
+                    style={{ background: c.surfaceAlt, color: c.textDim, border: `1px solid ${c.border}` }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={twoFactorBusy || twoFactorCode.length !== 6}
+                    className="flex-1 h-11 rounded-xl text-sm font-bold"
+                    style={{ background: c.green, color: "#06210F", opacity: twoFactorBusy ? 0.7 : 1 }}
+                  >
+                    {twoFactorBusy ? "Verifying…" : "Verify & Enable"}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {twoFactorStage === "on" && (
+              <div className="flex flex-col gap-4">
+                <div
+                  className="flex items-center gap-3 rounded-2xl p-4"
+                  style={{ background: c.greenDim }}
+                >
+                  <Check size={18} style={{ color: c.green }} />
+                  <div>
+                    <div className="text-sm font-bold">2FA is enabled</div>
+                    <div className="text-xs mt-0.5" style={{ color: c.textDim }}>
+                      You'll be asked for a code from your app every time you log in
+                    </div>
+                  </div>
+                </div>
+
+                {!showDisableForm ? (
+                  <button
+                    onClick={() => setShowDisableForm(true)}
+                    className="h-11 rounded-xl text-sm font-bold"
+                    style={{ background: c.redDim, color: c.red }}
+                  >
+                    Disable 2FA
+                  </button>
+                ) : (
+                  <form onSubmit={disableTwoFactor} className="flex flex-col gap-3">
+                    <p className="text-xs" style={{ color: c.textDim }}>
+                      Enter your password to confirm disabling 2FA.
+                    </p>
+                    <Field icon={Lock}>
+                      <input
+                        type="password"
+                        value={disablePassword}
+                        onChange={(e) => setDisablePassword(e.target.value)}
+                        placeholder="Password"
+                        className="flex-1 outline-none text-sm bg-transparent"
+                        style={{ color: c.text }}
+                      />
+                    </Field>
+                    {twoFactorError && (
+                      <div className="text-xs font-medium" style={{ color: c.red }}>{twoFactorError}</div>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowDisableForm(false);
+                          setDisablePassword("");
+                          setTwoFactorError("");
+                        }}
+                        className="flex-1 h-11 rounded-xl text-sm font-bold"
+                        style={{ background: c.surfaceAlt, color: c.textDim, border: `1px solid ${c.border}` }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={twoFactorBusy}
+                        className="flex-1 h-11 rounded-xl text-sm font-bold"
+                        style={{ background: c.red, color: "#fff", opacity: twoFactorBusy ? 0.7 : 1 }}
+                      >
+                        {twoFactorBusy ? "Disabling…" : "Confirm Disable"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
           </SettingsRow>
 
           <SettingsRow
@@ -4194,12 +4402,91 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
 }
 
 // ---------------------------------------------------------------------------
+// TWO-FACTOR LOGIN CHALLENGE — shown only after a correct password, and only
+// for accounts that have 2FA enabled. Everyone else never sees this screen.
+// ---------------------------------------------------------------------------
+function TwoFactorChallengeScreen({ onVerify, onCancel }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (code.length !== 6) return;
+    setError("");
+    setSubmitting(true);
+    try {
+      await onVerify(code);
+    } catch (err) {
+      setError(err.message || "Incorrect code — try again");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center px-5" style={{ background: c.bg, color: c.text }}>
+      <div className="w-full max-w-[380px]">
+        <div className="flex flex-col items-center text-center mb-7">
+          <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
+            style={{ background: c.amberDim }}
+          >
+            <Smartphone size={24} style={{ color: c.amber }} />
+          </div>
+          <h2 className="text-xl font-bold mb-1.5">Two-factor authentication</h2>
+          <p className="text-sm" style={{ color: c.textDim }}>
+            Enter the 6-digit code from your authenticator app.
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <Field icon={ShieldCheck}>
+            <input
+              value={code}
+              onChange={(e) => {
+                setCode(e.target.value.replace(/\D/g, "").slice(0, 6));
+                setError("");
+              }}
+              placeholder="6-digit code"
+              inputMode="numeric"
+              autoFocus
+              className="flex-1 outline-none text-sm bg-transparent tracking-widest"
+              style={{ color: c.text }}
+            />
+          </Field>
+          {error && (
+            <div className="text-xs font-medium text-center" style={{ color: c.red }}>{error}</div>
+          )}
+          <button
+            type="submit"
+            disabled={submitting || code.length !== 6}
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
+            style={{ height: 52, background: c.amber, color: "#181205", opacity: submitting ? 0.7 : 1 }}
+          >
+            {submitting ? <Loader2 size={16} className="animate-spin" /> : "Verify & Log In"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-sm font-semibold text-center"
+            style={{ color: c.textDim }}
+          >
+            Back to login
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App shell — routes between the auth screen and the trading dashboard
 // ---------------------------------------------------------------------------
 export default function App() {
   const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history" | "about"
   const [booting, setBooting] = useState(true);
   const [authError, setAuthError] = useState("");
+  const [twoFactorChallenge, setTwoFactorChallenge] = useState(null); // { preAuthToken } | null
   const [user, setUser] = useState(null); // { name, email, referralCode, twoFactorEnabled, identityStatus }
   const [accountType, setAccountType] = useState("demo"); // "demo" | "real"
   const [demoBalance, setDemoBalance] = useState(10000);
@@ -4278,13 +4565,30 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(mode === "signup" ? { name, email, password } : { email, password }),
       });
-      setToken(data.token);
       setAuthError("");
+
+      if (data.requiresTwoFactor) {
+        setTwoFactorChallenge({ preAuthToken: data.preAuthToken });
+        return;
+      }
+
+      setToken(data.token);
       await loadSession(data.user);
       setScreen("dashboard");
     } catch (err) {
       setAuthError(err.message || "Something went wrong");
     }
+  }
+
+  async function handleTwoFactorVerify(code) {
+    const data = await backendApi("/api/auth/login/2fa", {
+      method: "POST",
+      body: JSON.stringify({ preAuthToken: twoFactorChallenge.preAuthToken, code }),
+    });
+    setToken(data.token);
+    setTwoFactorChallenge(null);
+    await loadSession(data.user);
+    setScreen("dashboard");
   }
 
   function handleLogout() {
@@ -4386,6 +4690,14 @@ export default function App() {
         onBack={() => setScreen("dashboard")}
         user={user}
         onUpdateUser={onUpdateUser}
+      />
+    );
+  }
+  if (twoFactorChallenge) {
+    return (
+      <TwoFactorChallengeScreen
+        onVerify={handleTwoFactorVerify}
+        onCancel={() => setTwoFactorChallenge(null)}
       />
     );
   }
