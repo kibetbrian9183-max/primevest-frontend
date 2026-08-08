@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   LineChart,
   Line,
+  AreaChart,
+  Area,
+  ReferenceLine,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -58,6 +61,7 @@ import {
   Upload,
   Sparkles,
   Search,
+  BarChart3,
 } from "lucide-react";
 
 
@@ -206,6 +210,35 @@ function rotateDigitStats(prev) {
   const nudged = prev.map((v) => Math.max(2, v + (Math.random() - 0.5) * 3.2));
   const sum = nudged.reduce((a, b) => a + b, 0);
   return nudged.map((v) => Number(((v / sum) * 100).toFixed(1)));
+}
+
+// Draws the dashed current-price line's decorations: a small dot at the
+// left edge and a bordered price pill at the right edge — recharts hands
+// us the already-computed pixel viewBox for the reference line, so we
+// just draw plain SVG on top of it.
+function CurrentPriceLabel({ viewBox, value, color }) {
+  if (!viewBox) return null;
+  const { x, y, width } = viewBox;
+  const text = value.toFixed(2);
+  const boxWidth = text.length * 7.5 + 22;
+  const boxX = x + width - boxWidth;
+  return (
+    <g>
+      <circle cx={x} cy={y} r={4} fill={color} />
+      <rect x={boxX} y={y - 12} width={boxWidth} height={24} rx={7} fill={c.bg} stroke={color} strokeWidth={1.5} />
+      <text
+        x={boxX + boxWidth / 2}
+        y={y + 4}
+        textAnchor="middle"
+        fill={c.text}
+        fontSize={11}
+        fontWeight={700}
+        fontFamily="monospace"
+      >
+        {text}
+      </text>
+    </g>
+  );
 }
 
 function maskEmail(email) {
@@ -670,6 +703,7 @@ function TradingDashboard({
   const symbol = SYMBOLS.find((s) => s.id === symbolId) || SYMBOLS[0];
   const [data, setData] = useState(() => makeInitialSeries(symbol.base, 80));
   const [zoomPoints, setZoomPoints] = useState(40);
+  const [historicalView, setHistoricalView] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [darkTheme, setDarkTheme] = useState(true);
   const [balanceMenuOpen, setBalanceMenuOpen] = useState(false);
@@ -763,7 +797,7 @@ function TradingDashboard({
         const merged = [...prev.slice(1), nextPoint];
         return merged;
       });
-    }, 2000);
+    }, 1000);
     return () => clearInterval(id);
   }, [symbol.base, symbol.vol]);
 
@@ -775,7 +809,10 @@ function TradingDashboard({
     return () => clearInterval(id);
   }, []);
 
-  const visibleData = useMemo(() => data.slice(-zoomPoints), [data, zoomPoints]);
+  const visibleData = useMemo(
+    () => (historicalView ? data : data.slice(-zoomPoints)),
+    [data, zoomPoints, historicalView]
+  );
   const currentPrice = data[data.length - 1].price;
   const changePct = useMemo(() => {
     const open = openingPriceRef.current;
@@ -1351,82 +1388,118 @@ function TradingDashboard({
 
             {/* Chart card */}
             <div
-              className="rounded-3xl border overflow-hidden mb-4"
+              className="relative rounded-3xl border overflow-hidden mb-4"
               style={{ background: c.bg, borderColor: c.border, boxShadow: "0 20px 40px rgba(0,0,0,0.4)" }}
             >
-              <div className="flex items-start justify-between px-4 sm:px-5 pt-4 pb-2">
-                <div className="relative">
-                  <button
-                    onClick={() => !autoRunning && setSymbolMenuOpen((v) => !v)}
-                    disabled={autoRunning}
-                    className="flex items-center gap-2 mb-1.5"
-                    style={{ cursor: autoRunning ? "not-allowed" : "pointer" }}
-                  >
-                    <span
-                      className="w-2 h-2 rounded-full"
-                      style={{ background: c.amber, boxShadow: `0 0 8px ${c.amber}` }}
-                    />
-                    <span className="text-xs font-semibold tracking-wide" style={{ color: c.textDim }}>
-                      {symbol.short}
-                    </span>
-                    <ChevronDown size={13} style={{ color: c.textFaint }} />
-                  </button>
-                  {symbolMenuOpen && (
-                    <div
-                      className="absolute left-0 top-full mt-1 w-52 rounded-xl border overflow-hidden shadow-2xl z-20"
-                      style={{ background: c.elevated, borderColor: c.border }}
+              {/* Floating instrument header, overlaid on the chart itself */}
+              <div className="absolute top-3 left-3 right-3 z-10 flex items-start justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="relative">
+                    <button
+                      onClick={() => !autoRunning && setSymbolMenuOpen((v) => !v)}
+                      disabled={autoRunning}
+                      className="flex items-center gap-2 rounded-2xl pl-2.5 pr-3 py-2"
+                      style={{
+                        background: "rgba(16,20,29,0.82)",
+                        border: `1px solid ${c.border}`,
+                        backdropFilter: "blur(6px)",
+                        cursor: autoRunning ? "not-allowed" : "pointer",
+                      }}
                     >
-                      {SYMBOLS.map((s) => (
-                        <button
-                          key={s.id}
-                          onClick={() => switchSymbol(s.id)}
-                          className="w-full text-left px-4 py-2.5 text-sm hover:bg-white/5 flex items-center justify-between"
-                          style={{ color: s.id === symbolId ? c.amber : c.text }}
-                        >
-                          {s.label}
-                          {s.id === symbolId && <Check size={14} style={{ color: c.amber }} />}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex items-baseline gap-2 flex-wrap">
-                    <span className="text-2xl sm:text-3xl font-bold font-mono tabular-nums">
-                      {currentPrice.toFixed(2)}
-                    </span>
-                    <span
-                      className="flex items-center gap-0.5 text-sm font-semibold font-mono"
-                      style={{ color: trendColor }}
-                    >
-                      {isUp ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
-                      {changePct.toFixed(2)}%
-                    </span>
+                      <div
+                        className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ background: c.amberDim }}
+                      >
+                        <BarChart3 size={13} style={{ color: c.amber }} />
+                      </div>
+                      <div className="text-left">
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs font-bold">{symbol.label}</span>
+                          <ChevronDown size={12} style={{ color: c.textFaint }} />
+                        </div>
+                        <div className="flex items-center gap-1.5 font-mono">
+                          <span className="text-[11px] font-bold" style={{ color: c.text }}>
+                            {currentPrice.toFixed(2)}
+                          </span>
+                          <span
+                            className="flex items-center text-[10px] font-bold"
+                            style={{ color: trendColor }}
+                          >
+                            {isUp ? "+" : ""}
+                            {changePct.toFixed(2)}%
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                    {symbolMenuOpen && (
+                      <div
+                        className="absolute left-0 top-full mt-1 w-52 rounded-xl border overflow-hidden shadow-2xl z-20"
+                        style={{ background: c.elevated, borderColor: c.border }}
+                      >
+                        {SYMBOLS.map((s) => (
+                          <button
+                            key={s.id}
+                            onClick={() => switchSymbol(s.id)}
+                            className="w-full text-left px-4 py-2.5 text-sm hover:bg-white/5 flex items-center justify-between"
+                            style={{ color: s.id === symbolId ? c.amber : c.text }}
+                          >
+                            {s.label}
+                            {s.id === symbolId && <Check size={14} style={{ color: c.amber }} />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
+
+                  <button
+                    onClick={() => setHistoricalView((v) => !v)}
+                    className="h-8 px-3 rounded-2xl text-[11px] font-bold flex-shrink-0"
+                    style={{
+                      background: historicalView ? "linear-gradient(90deg, #F6465D, #EC4899)" : "rgba(16,20,29,0.82)",
+                      color: historicalView ? "#fff" : c.textDim,
+                      border: `1px solid ${historicalView ? "transparent" : c.border}`,
+                    }}
+                  >
+                    Historical View
+                  </button>
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <span
+                    className="h-8 px-3 rounded-2xl text-[11px] font-bold flex items-center"
+                    style={{ background: "rgba(16,20,29,0.82)", border: `1px solid ${c.border}`, color: c.textDim }}
+                  >
+                    {Math.round((zoomPoints / 100) * 100)}%
+                  </span>
                   <button
                     onClick={() => setZoomPoints((z) => Math.min(data.length, z + 10))}
-                    className="flex items-center justify-center w-9 h-9 rounded-xl border"
-                    style={{ background: c.surfaceAlt, borderColor: c.border }}
+                    className="flex items-center justify-center w-8 h-8 rounded-xl"
+                    style={{ background: "rgba(16,20,29,0.82)", border: `1px solid ${c.border}` }}
                     aria-label="Zoom out"
                   >
-                    <Minus size={16} style={{ color: c.textDim }} />
+                    <Minus size={14} style={{ color: c.textDim }} />
                   </button>
                   <button
                     onClick={() => setZoomPoints((z) => Math.max(15, z - 10))}
-                    className="flex items-center justify-center w-9 h-9 rounded-xl border"
-                    style={{ background: c.surfaceAlt, borderColor: c.border }}
+                    className="flex items-center justify-center w-8 h-8 rounded-xl"
+                    style={{ background: "rgba(16,20,29,0.82)", border: `1px solid ${c.border}` }}
                     aria-label="Zoom in"
                   >
-                    <Plus size={16} style={{ color: c.textDim }} />
+                    <Plus size={14} style={{ color: c.textDim }} />
                   </button>
                 </div>
               </div>
 
-              <div className="h-56 sm:h-72 w-full px-1 sm:px-2">
+              <div className="h-64 sm:h-80 w-full pt-16 pb-1 px-1 sm:px-2">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={visibleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                    <CartesianGrid stroke="rgba(255,255,255,0.045)" vertical={false} />
+                  <AreaChart data={visibleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                    <defs>
+                      <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#E9ECF2" stopOpacity={0.16} />
+                        <stop offset="100%" stopColor="#E9ECF2" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" horizontal vertical />
                     <XAxis
                       dataKey="time"
                       tickFormatter={(t) =>
@@ -1444,17 +1517,25 @@ function TradingDashboard({
                       axisLine={false}
                       tickLine={false}
                       width={54}
-                      tickFormatter={(v) => v.toFixed(1)}
+                      tickFormatter={(v) => v.toFixed(2)}
                     />
-                    <Line
+                    <ReferenceLine
+                      y={currentPrice}
+                      stroke={c.textFaint}
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.6}
+                      label={<CurrentPriceLabel value={currentPrice} color={trendColor} />}
+                    />
+                    <Area
                       type="monotone"
                       dataKey="price"
-                      stroke={trendColor}
-                      strokeWidth={2}
+                      stroke="#E9ECF2"
+                      strokeWidth={1.75}
+                      fill="url(#priceFill)"
                       dot={false}
                       isAnimationActive={false}
                     />
-                  </LineChart>
+                  </AreaChart>
                 </ResponsiveContainer>
               </div>
             </div>
