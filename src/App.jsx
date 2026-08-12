@@ -3008,8 +3008,7 @@ function DepositScreen({ onBack, onComplete, onBalanceSet, onAddPayment }) {
 // ---------------------------------------------------------------------------
 // WITHDRAW — to M-Pesa
 // ---------------------------------------------------------------------------
-function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPayment }) {
-  const [phone, setPhone] = useState("");
+function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPayment, registeredPhone }) {
   const [amount, setAmount] = useState("");
   const [error, setError] = useState({});
   const [stage, setStage] = useState("form"); // form | processing | success | failed
@@ -3020,7 +3019,9 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
   async function submit(e) {
     e.preventDefault();
     const errs = {};
-    if (!isValidKenyanNumber(phone)) errs.phone = "Enter a valid Safaricom number";
+    if (!registeredPhone) {
+      errs.amount = "Add a phone number to your account in Settings before withdrawing";
+    }
     const amt = Number(amount);
     if (!amt || amt < 1) errs.amount = "Minimum withdrawal is $1";
     else if (balance <= 0) errs.amount = "Insufficient balance";
@@ -3028,14 +3029,13 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
     setError(errs);
     if (Object.keys(errs).length) return;
 
-    const msisdn = toMsisdn254(phone);
-    setPhone(msisdn);
-
     setStage("processing");
     try {
+      // Payouts always go to the phone number on the account — never a
+      // client-editable field — so the backend doesn't accept one here either.
       const data = await backendApi("/api/payments/withdraw", {
         method: "POST",
-        body: JSON.stringify({ phone: msisdn, amountUsd: amt }),
+        body: JSON.stringify({ amountUsd: amt }),
       });
       setReference(data.reference);
       setKesAmount(data.amountKes);
@@ -3045,7 +3045,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
         type: "withdrawal",
         amount: data.amountKes,
         usdAmount: amt,
-        phone: msisdn,
+        phone: registeredPhone,
         status: "pending",
         time: Date.now(),
       });
@@ -3097,7 +3097,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           <h2 className="text-lg font-bold mb-2">Submitting your request…</h2>
           <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
             ${Number(amount).toFixed(2)} (KES {kesEquivalent.toLocaleString()}) to{" "}
-            <span style={{ color: c.text }}>{phone}</span>
+            <span style={{ color: c.text }}>{registeredPhone}</span>
           </p>
         </div>
       </div>
@@ -3121,7 +3121,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
             <span className="font-semibold" style={{ color: c.text }}>
               KES {kesEquivalent.toLocaleString()}
             </span>
-            ) to {phone} has been received. Our team will process this manually and disburse the funds
+            ) to {registeredPhone} has been received. Our team will process this manually and disburse the funds
             shortly.
           </p>
           <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>
@@ -3160,20 +3160,34 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
             <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
               M-Pesa phone number
             </label>
-            <Field icon={Smartphone} error={error.phone}>
-              <input
-                value={phone}
-                onChange={(e) => {
-                  setPhone(e.target.value);
-                  setError((er) => ({ ...er, phone: undefined }));
-                }}
-                onBlur={() => setPhone((p) => (p ? toMsisdn254(p) : p))}
-                placeholder="07XX XXX XXX"
-                inputMode="tel"
-                className="flex-1 outline-none text-sm bg-transparent"
-                style={{ color: c.text }}
-              />
-            </Field>
+            {registeredPhone ? (
+              <div
+                className="flex items-center gap-2.5 h-13 rounded-2xl border px-4"
+                style={{ height: 52, background: c.surfaceAlt, borderColor: c.border }}
+              >
+                <Smartphone size={17} style={{ color: c.textFaint, flexShrink: 0 }} />
+                <span className="flex-1 text-sm" style={{ color: c.text }}>{registeredPhone}</span>
+                <span
+                  className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
+                  style={{ background: c.amberDim, color: c.amber }}
+                >
+                  Registered number
+                </span>
+              </div>
+            ) : (
+              <div
+                className="flex items-center gap-2.5 rounded-2xl border px-4 py-3"
+                style={{ background: c.redDim, borderColor: c.red }}
+              >
+                <AlertTriangle size={17} style={{ color: c.red, flexShrink: 0 }} />
+                <span className="text-xs" style={{ color: c.text }}>
+                  No phone number on file — add one in Settings before withdrawing.
+                </span>
+              </div>
+            )}
+            <p className="text-[11px] mt-1.5" style={{ color: c.textFaint }}>
+              Withdrawals always go to the phone number on your account, for your security.
+            </p>
           </div>
 
           <div>
@@ -3223,8 +3237,9 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 
           <button
             type="submit"
+            disabled={!registeredPhone}
             className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mt-1"
-            style={{ height: 52, background: c.amber, color: "#181205" }}
+            style={{ height: 52, background: c.amber, color: "#181205", opacity: registeredPhone ? 1 : 0.5 }}
           >
             Submit withdrawal request
             <ArrowRight size={16} />
@@ -4071,6 +4086,9 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
   const [open, setOpen] = useState(null);
   const [name, setName] = useState(user?.name || "");
   const [nameSaved, setNameSaved] = useState(false);
+  const [phone, setPhone] = useState(user?.phone || "");
+  const [phoneSaved, setPhoneSaved] = useState(false);
+  const [phoneError, setPhoneError] = useState("");
   const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
   const [pwError, setPwError] = useState("");
   const [pwSaved, setPwSaved] = useState(false);
@@ -4115,6 +4133,27 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
       window.setTimeout(() => setNameSaved(false), 2000);
     } catch (err) {
       setNameError(err.message);
+    }
+  }
+
+  async function savePhone(e) {
+    e.preventDefault();
+    if (!isValidKenyanNumber(phone)) {
+      setPhoneError("Enter a valid Safaricom number");
+      return;
+    }
+    setPhoneError("");
+    try {
+      const { user: updated } = await backendApi("/api/auth/me", {
+        method: "PATCH",
+        body: JSON.stringify({ phone: toMsisdn254(phone) }),
+      });
+      onUpdateUser?.({ phone: updated.phone });
+      setPhone(updated.phone);
+      setPhoneSaved(true);
+      window.setTimeout(() => setPhoneSaved(false), 2000);
+    } catch (err) {
+      setPhoneError(err.message);
     }
   }
 
@@ -4305,6 +4344,49 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
                 style={{ background: c.amber, color: "#181205" }}
               >
                 {nameSaved ? "Saved ✓" : "Save name"}
+              </button>
+            </form>
+          </SettingsRow>
+
+          <SettingsRow
+            icon={Smartphone}
+            label={user?.phone ? "M-Pesa Phone Number" : "Add Phone Number"}
+            badge={
+              !user?.phone && (
+                <span
+                  className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                  style={{ background: c.redDim, color: c.red }}
+                >
+                  Required
+                </span>
+              )
+            }
+            expanded={open === "phone"}
+            onToggle={() => toggle("phone")}
+          >
+            <form onSubmit={savePhone} className="flex flex-col gap-3">
+              {!user?.phone && (
+                <p className="text-xs -mt-1" style={{ color: c.textDim }}>
+                  Withdrawals and password-reset codes are sent to this number. Add it to enable both.
+                </p>
+              )}
+              <Field icon={Smartphone} error={phoneError}>
+                <input
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  onBlur={() => setPhone((p) => (p ? toMsisdn254(p) : p))}
+                  placeholder="07XX XXX XXX"
+                  inputMode="tel"
+                  className="flex-1 outline-none text-sm bg-transparent"
+                  style={{ color: c.text }}
+                />
+              </Field>
+              <button
+                type="submit"
+                className="h-11 rounded-xl text-sm font-bold"
+                style={{ background: c.amber, color: "#181205" }}
+              >
+                {phoneSaved ? "Saved ✓" : user?.phone ? "Update number" : "Add number"}
               </button>
             </form>
           </SettingsRow>
@@ -5003,6 +5085,7 @@ export default function App() {
         balance={realBalance}
         onBalanceSet={(amount) => setRealBalance(amount)}
         onAddPayment={addPayment}
+        registeredPhone={user?.phone || ""}
       />
     );
   }
