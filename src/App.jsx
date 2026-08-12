@@ -64,6 +64,15 @@ import {
   BarChart3,
   Copy,
   Coins,
+  Star,
+  Zap,
+  Layers,
+  Headphones,
+  Globe,
+  Users,
+  TrendingDown,
+  CreditCard,
+  Award,
 } from "lucide-react";
 
 
@@ -2021,8 +2030,395 @@ function Field({ icon: Icon, error, children }) {
   );
 }
 
-function AuthScreen({ onAuth, authError, clearAuthError }) {
-  const [mode, setMode] = useState("login"); // "login" | "signup"
+// ---------------------------------------------------------------------------
+// LANDING PAGE — marketing home shown before login/signup. All primary CTAs
+// (Get Started, Start Trading Now, Create Free Account, Try Demo) route into
+// signup; "Log in" routes into login. Try Demo also goes through signup
+// because a demo balance in this app lives on the user's account record —
+// there's no anonymous demo mode to drop into.
+// ---------------------------------------------------------------------------
+const LANDING_FEATURES = [
+  { icon: Zap, tint: "#FF8A3D", tintBg: "rgba(255,138,61,0.14)", title: "Lightning Execution", desc: "Sub-second trade execution powered by our global infrastructure" },
+  { icon: Shield, tint: c.green, tintBg: c.greenDim, title: "Bank-Grade Security", desc: "Your funds protected with enterprise encryption and cold storage" },
+  { icon: Layers, tint: "#A78BFA", tintBg: "rgba(167,139,250,0.14)", title: "100+ Markets", desc: "Forex, crypto, stocks, indices, and commodities — all in one place" },
+  { icon: Wallet, tint: "#FB7185", tintBg: "rgba(251,113,133,0.14)", title: "Zero Fees", desc: "No hidden charges on deposits, withdrawals, or account maintenance" },
+  { icon: Headphones, tint: c.green, tintBg: c.greenDim, title: "24/7 Live Support", desc: "Expert help whenever you need it" },
+];
+
+const LANDING_STATS = [
+  { icon: Users, value: "1M+", label: "Active Traders" },
+  { icon: BarChart3, value: "$50M+", label: "Daily Volume" },
+  { icon: Globe, value: "100+", label: "Trading Assets" },
+  { icon: Headphones, value: "24/7", label: "Live Support" },
+];
+
+const LANDING_STEPS = [
+  { n: "01", icon: Users, title: "Create Account", desc: "Sign up in 30 seconds. No lengthy forms, no ID required to start." },
+  { n: "02", icon: Zap, title: "Fund & Trade", desc: "Deposit from $1 with 20+ payment methods. Pick an asset and direction." },
+  { n: "03", icon: Wallet, title: "Collect Profits", desc: "Withdraw anytime. Payouts processed within minutes, not days." },
+];
+
+const LANDING_MARKET_POINTS = [
+  { icon: Clock, title: "Real-Time Prices", desc: "Live market data with zero delay" },
+  { icon: CreditCard, title: "20+ Payment Methods", desc: "Crypto, cards, bank transfer, e-wallets" },
+  { icon: Award, title: "Up to 950% Returns", desc: "Industry-leading payout rates" },
+];
+
+const LANDING_TESTIMONIALS = [
+  { initials: "AM", flag: "🇺🇸", name: "Alex M.", role: "Day Trader", quote: "The execution speed is incredible. I switched from my old platform and never looked back." },
+  { initials: "SK", flag: "🇬🇧", name: "Sarah K.", role: "Forex Trader", quote: "From crypto to forex, everything I need in one place. The charts are superb." },
+  { initials: "MR", flag: "🇨🇦", name: "Mike R.", role: "Beginner", quote: "Demo account helped me learn risk-free. Now I trade with real confidence." },
+  { initials: "EL", flag: "🇦🇺", name: "Emma L.", role: "Crypto Trader", quote: "BTC and ETH options with great payouts. This platform delivers." },
+  { initials: "JW", flag: "🇩🇪", name: "James W.", role: "Professional", quote: "10 years trading and this is the best platform I have ever used." },
+  { initials: "LT", flag: "🇫🇷", name: "Lisa T.", role: "Part-time", quote: "Perfect for spare-time trading. Clean mobile experience." },
+];
+
+function LandingBadge({ children }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-[11px] font-bold tracking-wide px-3 py-1.5 rounded-full uppercase"
+      style={{ background: c.amberDim, color: c.amber }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function LandingSectionHeader({ badge, title, subtitle, align = "center" }) {
+  return (
+    <div className={`flex flex-col gap-3 mb-8 ${align === "center" ? "items-center text-center" : "items-start text-left"}`}>
+      <LandingBadge>{badge}</LandingBadge>
+      <h2 className="text-2xl font-extrabold leading-tight">{title}</h2>
+      {subtitle && (
+        <p className="text-sm max-w-md" style={{ color: c.textDim }}>{subtitle}</p>
+      )}
+    </div>
+  );
+}
+
+function LandingScreen({ onGetStarted, onLogin, onTryDemo }) {
+  return (
+    <div className="min-h-screen w-full font-sans" style={{ background: c.bg, color: c.text }}>
+      {/* Sticky header */}
+      <div
+        className="sticky top-0 z-20 flex items-center justify-between px-4 sm:px-6 h-16 border-b backdrop-blur"
+        style={{ background: "rgba(11,14,20,0.85)", borderColor: c.border }}
+      >
+        <div className="flex items-center gap-2">
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: `linear-gradient(135deg, ${c.amber}, #FF8A3D)` }}
+          >
+            <TrendingUp size={17} style={{ color: "#181205" }} />
+          </div>
+          <span className="text-base font-extrabold tracking-tight">PrimeVest</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onLogin}
+            className="text-sm font-semibold px-3.5 py-2 rounded-xl"
+            style={{ color: c.text }}
+          >
+            Log in
+          </button>
+          <button
+            onClick={onGetStarted}
+            className="text-sm font-bold px-4 py-2 rounded-xl"
+            style={{ background: c.amber, color: "#181205" }}
+          >
+            Get Started
+          </button>
+        </div>
+      </div>
+
+      {/* Hero */}
+      <div className="px-4 sm:px-6 pt-10 pb-12 flex flex-col items-center text-center">
+        <span
+          className="inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full mb-6"
+          style={{ background: c.greenDim, color: c.green }}
+        >
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: c.green }} />
+          Live trading — 1M+ active traders
+        </span>
+        <h1 className="text-[2.4rem] leading-[1.05] font-extrabold mb-4 max-w-md">
+          Trade Smarter.
+          <br />
+          <span style={{ color: c.amber }}>Profit Faster.</span>
+        </h1>
+        <p className="text-sm max-w-sm mb-8" style={{ color: c.textDim }}>
+          Access 100+ global markets with lightning-fast execution, institutional-grade tools, and payouts up to 950%. Start with just $10.
+        </p>
+
+        <div className="w-full max-w-sm flex flex-col gap-3 mb-10">
+          <button
+            onClick={onGetStarted}
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
+            style={{ height: 52, background: c.amber, color: "#181205" }}
+          >
+            Start Trading Now
+            <ArrowRight size={16} />
+          </button>
+          <button
+            onClick={onTryDemo}
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 border"
+            style={{ height: 52, borderColor: c.borderStrong, color: c.text }}
+          >
+            Try Free Demo
+          </button>
+        </div>
+
+        <div className="grid grid-cols-4 gap-3 w-full max-w-md mb-10">
+          {[
+            { v: "$1", l: "Min. Deposit" },
+            { v: "$0.10", l: "Min. Trade" },
+            { v: "950%", l: "Max. Payout", accent: true },
+            { v: "<1s", l: "Execution" },
+          ].map((s) => (
+            <div key={s.l} className="text-center">
+              <div className="text-lg font-extrabold" style={{ color: s.accent ? c.green : c.text }}>{s.v}</div>
+              <div className="text-[10px]" style={{ color: c.textFaint }}>{s.l}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-3 gap-2.5 w-full max-w-lg">
+          {[
+            { sym: "BTC/USD", price: "$43,256.78", chg: "+2.34%", up: true, bg: "#F7931A" },
+            { sym: "ETH/USD", price: "$2,284.50", chg: "+1.87%", up: true, bg: "#A78BFA" },
+            { sym: "EUR/USD", price: "1.0842", chg: "-0.12%", up: false, bg: c.surfaceAlt },
+          ].map((t) => (
+            <div key={t.sym} className="rounded-xl border p-2.5 text-left" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="text-[11px] font-bold mb-1">{t.sym}</div>
+              <div className="text-xs font-mono mb-0.5">{t.price}</div>
+              <span className="text-[10px] font-bold" style={{ color: t.up ? c.green : c.red }}>{t.chg}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Why PrimeVest */}
+      <div className="px-4 sm:px-6 py-12" style={{ borderTop: `1px solid ${c.border}` }}>
+        <LandingSectionHeader badge="Why PrimeVest" title="Built for serious traders" />
+        <div className="flex flex-col gap-3 max-w-lg mx-auto">
+          {LANDING_FEATURES.map((f) => (
+            <div key={f.title} className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+              <div
+                className="w-11 h-11 rounded-xl flex items-center justify-center mb-4"
+                style={{ background: f.tintBg }}
+              >
+                <f.icon size={20} style={{ color: f.tint }} />
+              </div>
+              <div className="text-sm font-bold mb-1">{f.title}</div>
+              <div className="text-xs" style={{ color: c.textDim }}>{f.desc}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Live demo trade card */}
+      <div className="px-4 sm:px-6 pb-12">
+        <div className="rounded-2xl border p-4 max-w-lg mx-auto" style={{ background: c.surface, borderColor: c.border }}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "#F7931A" }}>
+                <span className="text-sm font-bold text-white">₿</span>
+              </div>
+              <div>
+                <div className="text-sm font-bold leading-tight">BTC/USD</div>
+                <div className="text-[11px]" style={{ color: c.textFaint }}>Bitcoin</div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-sm font-bold font-mono">$43,256.78</div>
+              <div className="text-xs font-bold" style={{ color: c.green }}>+2.34%</div>
+            </div>
+          </div>
+          <div
+            className="h-32 rounded-xl mb-4 relative overflow-hidden flex items-end"
+            style={{ background: "linear-gradient(180deg, rgba(22,199,132,0.16), rgba(22,199,132,0))" }}
+          >
+            <span
+              className="absolute top-2 right-2.5 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1"
+              style={{ background: "rgba(0,0,0,0.4)", color: c.green }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: c.green }} /> LIVE
+            </span>
+            <svg viewBox="0 0 300 100" className="w-full h-full" preserveAspectRatio="none">
+              <polyline
+                points="0,85 40,70 70,72 100,55 130,58 160,40 190,38 220,25 250,22 300,5"
+                fill="none"
+                stroke={c.green}
+                strokeWidth="2.5"
+              />
+            </svg>
+          </div>
+          <div className="flex gap-2.5">
+            <button
+              onClick={onTryDemo}
+              className="flex-1 h-12 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5"
+              style={{ background: c.green, color: "#04140C" }}
+            >
+              <TrendingUp size={16} /> UP <span className="opacity-80">+95%</span>
+            </button>
+            <button
+              onClick={onTryDemo}
+              className="flex-1 h-12 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5"
+              style={{ background: c.red, color: "#fff" }}
+            >
+              <TrendingDown size={16} /> DOWN <span className="opacity-80">+95%</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div className="px-4 sm:px-6 pb-12">
+        <div className="grid grid-cols-2 gap-3 max-w-md mx-auto">
+          {LANDING_STATS.map((s) => (
+            <div key={s.label} className="rounded-2xl border p-4 text-center" style={{ background: c.surface, borderColor: c.border }}>
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center mx-auto mb-3"
+                style={{ background: c.greenDim }}
+              >
+                <s.icon size={18} style={{ color: c.green }} />
+              </div>
+              <div className="text-xl font-extrabold">{s.value}</div>
+              <div className="text-[11px]" style={{ color: c.textDim }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Testimonials */}
+      <div className="px-4 sm:px-6 py-12" style={{ borderTop: `1px solid ${c.border}` }}>
+        <LandingSectionHeader badge="Testimonials" title="Trusted by traders worldwide" />
+        <div className="flex flex-col gap-3 max-w-lg mx-auto mb-6">
+          {LANDING_TESTIMONIALS.map((t) => (
+            <div key={t.name} className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="flex gap-0.5 mb-2.5">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Star key={i} size={14} fill={c.amber} style={{ color: c.amber }} />
+                ))}
+              </div>
+              <p className="text-sm mb-3" style={{ color: c.text }}>&quot;{t.quote}&quot;</p>
+              <div className="flex items-center gap-2.5">
+                <div
+                  className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+                  style={{ background: c.greenDim, color: c.green }}
+                >
+                  {t.initials}
+                </div>
+                <div>
+                  <div className="text-xs font-bold flex items-center gap-1.5">{t.name} <span>{t.flag}</span></div>
+                  <div className="text-[11px]" style={{ color: c.textFaint }}>{t.role}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="text-center text-sm" style={{ color: c.textDim }}>
+          <span className="font-bold" style={{ color: c.green }}>4.9/5</span> from{" "}
+          <span className="font-bold" style={{ color: c.text }}>50,000+</span> reviews
+        </div>
+      </div>
+
+      {/* Three steps */}
+      <div className="px-4 sm:px-6 py-12" style={{ borderTop: `1px solid ${c.border}` }}>
+        <LandingSectionHeader badge="Getting Started" title="Three steps to your first trade" />
+        <div className="flex flex-col gap-3 max-w-lg mx-auto">
+          {LANDING_STEPS.map((s) => (
+            <div key={s.n} className="relative rounded-2xl border p-4 overflow-hidden" style={{ background: c.surface, borderColor: c.border }}>
+              <span
+                className="absolute -top-1 right-3 text-5xl font-extrabold select-none"
+                style={{ color: c.borderStrong, opacity: 0.5 }}
+              >
+                {s.n}
+              </span>
+              <div
+                className="w-11 h-11 rounded-xl flex items-center justify-center mb-4 relative"
+                style={{ background: c.greenDim }}
+              >
+                <s.icon size={20} style={{ color: c.green }} />
+              </div>
+              <div className="text-sm font-bold mb-1 relative">{s.title}</div>
+              <div className="text-xs relative" style={{ color: c.textDim }}>{s.desc}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Trade global markets */}
+      <div className="px-4 sm:px-6 py-12" style={{ borderTop: `1px solid ${c.border}` }}>
+        <LandingSectionHeader
+          badge="Markets"
+          title="Trade global markets from one account"
+          subtitle="Access forex, cryptocurrencies, stocks, indices, and commodities — all with competitive spreads and instant execution."
+        />
+        <div className="flex flex-col gap-3 max-w-lg mx-auto">
+          {LANDING_MARKET_POINTS.map((m) => (
+            <div key={m.title} className="flex items-center gap-3 rounded-2xl border p-3.5" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: c.greenDim }}>
+                <m.icon size={18} style={{ color: c.green }} />
+              </div>
+              <div>
+                <div className="text-sm font-bold">{m.title}</div>
+                <div className="text-xs" style={{ color: c.textDim }}>{m.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Final CTA */}
+      <div className="px-4 sm:px-6 py-14 text-center" style={{ borderTop: `1px solid ${c.border}` }}>
+        <h2 className="text-2xl font-extrabold mb-3 max-w-sm mx-auto">Ready to start trading?</h2>
+        <p className="text-sm mb-8 max-w-sm mx-auto" style={{ color: c.textDim }}>
+          Join over 1 million traders. Create your free account in seconds and start with a risk-free demo.
+        </p>
+        <div className="w-full max-w-sm mx-auto flex flex-col gap-3">
+          <button
+            onClick={onGetStarted}
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
+            style={{ height: 52, background: c.amber, color: "#181205" }}
+          >
+            Create Free Account
+            <ArrowRight size={16} />
+          </button>
+          <button
+            onClick={onTryDemo}
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 border"
+            style={{ height: 52, borderColor: c.borderStrong, color: c.text }}
+          >
+            Try Demo
+          </button>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="px-4 sm:px-6 py-10 text-center" style={{ borderTop: `1px solid ${c.border}` }}>
+        <div className="flex items-center justify-center gap-2 mb-3">
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ background: `linear-gradient(135deg, ${c.amber}, #FF8A3D)` }}
+          >
+            <TrendingUp size={15} style={{ color: "#181205" }} />
+          </div>
+          <span className="text-sm font-extrabold">PrimeVest</span>
+        </div>
+        <p className="text-xs mb-4" style={{ color: c.textFaint }}>© 2026 PrimeVest. All rights reserved.</p>
+        <div className="flex items-center justify-center gap-4 text-xs" style={{ color: c.textDim }}>
+          <button className="underline underline-offset-2">Privacy</button>
+          <button className="underline underline-offset-2">Terms</button>
+          <button className="underline underline-offset-2">Responsible Trading</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function AuthScreen({ onAuth, authError, clearAuthError, initialMode }) {
+  const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login"); // "login" | "signup"
   const [showPw, setShowPw] = useState(false);
   const [showPw2, setShowPw2] = useState(false);
   const [remember, setRemember] = useState(true);
@@ -5430,6 +5826,8 @@ export default function App() {
   const [screen, setScreen] = useState("auth"); // "auth" | "dashboard" | "deposit" | "withdraw" | "history" | "about"
   const [booting, setBooting] = useState(true);
   const [authError, setAuthError] = useState("");
+  const [showLanding, setShowLanding] = useState(true);
+  const [authMode, setAuthMode] = useState("login"); // "login" | "signup" — set by which landing CTA was tapped
   const [twoFactorChallenge, setTwoFactorChallenge] = useState(null); // { preAuthToken } | null
   const [user, setUser] = useState(null); // { name, email, referralCode, twoFactorEnabled, identityStatus }
   const [accountType, setAccountType] = useState("demo"); // "demo" | "real"
@@ -5646,11 +6044,21 @@ export default function App() {
       />
     );
   }
+  if (showLanding) {
+    return (
+      <LandingScreen
+        onGetStarted={() => { setAuthMode("signup"); setShowLanding(false); }}
+        onLogin={() => { setAuthMode("login"); setShowLanding(false); }}
+        onTryDemo={() => { setAuthMode("signup"); setShowLanding(false); }}
+      />
+    );
+  }
   return (
     <AuthScreen
       onAuth={handleAuth}
       authError={authError}
       clearAuthError={() => setAuthError("")}
+      initialMode={authMode}
     />
   );
 }
