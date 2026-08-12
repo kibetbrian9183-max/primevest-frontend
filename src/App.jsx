@@ -62,6 +62,8 @@ import {
   Sparkles,
   Search,
   BarChart3,
+  Copy,
+  Coins,
 } from "lucide-react";
 
 
@@ -164,9 +166,11 @@ function transformPayment(p) {
   return {
     id: p._id,
     type: p.type,
+    method: p.method || "mpesa",
     amount: p.amountKes,
     usdAmount: p.usdAmount,
     phone: p.phone,
+    walletAddress: p.walletAddress,
     status: p.status,
     time: p.createdAt ? new Date(p.createdAt).getTime() : Date.now(),
   };
@@ -2757,7 +2761,58 @@ function isValidKenyanNumber(raw) {
 // ---------------------------------------------------------------------------
 // DEPOSIT — M-Pesa STK Push
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Shared payment-method picker — M-Pesa vs USDT (TRC20), used by both
+// Deposit and Withdraw before showing the method-specific form.
+// ---------------------------------------------------------------------------
+function PaymentMethodPicker({ onPick }) {
+  return (
+    <div className="flex-1 flex justify-center px-4 sm:px-6 py-8">
+      <div className="w-full max-w-[420px] flex flex-col gap-3">
+        <div className="text-xs font-semibold mb-1" style={{ color: c.textDim }}>
+          Choose a method
+        </div>
+        <button
+          onClick={() => onPick("mpesa")}
+          className="flex items-center gap-3 rounded-2xl border p-4 text-left"
+          style={{ background: c.surface, borderColor: c.border }}
+        >
+          <div
+            className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: "rgba(22,199,132,0.14)" }}
+          >
+            <Smartphone size={20} style={{ color: c.green }} />
+          </div>
+          <div className="flex-1">
+            <div className="text-sm font-bold">M-Pesa</div>
+            <div className="text-xs" style={{ color: c.textDim }}>Instant mobile money</div>
+          </div>
+          <ChevronRight size={18} style={{ color: c.textFaint }} />
+        </button>
+        <button
+          onClick={() => onPick("usdt")}
+          className="flex items-center gap-3 rounded-2xl border p-4 text-left"
+          style={{ background: c.surface, borderColor: c.border }}
+        >
+          <div
+            className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: c.amberDim }}
+          >
+            <Coins size={20} style={{ color: c.amber }} />
+          </div>
+          <div className="flex-1">
+            <div className="text-sm font-bold">USDT (TRC20)</div>
+            <div className="text-xs" style={{ color: c.textDim }}>Cryptocurrency</div>
+          </div>
+          <ChevronRight size={18} style={{ color: c.textFaint }} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DepositScreen({ onBack, onComplete, onBalanceSet, onAddPayment }) {
+  const [method, setMethod] = useState(null); // null | "mpesa" | "usdt"
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState({});
@@ -2813,6 +2868,25 @@ function DepositScreen({ onBack, onComplete, onBalanceSet, onAddPayment }) {
   }
 
   const usdEquivalent = creditedUsd || (amount ? kesToUsd(Number(amount)) : 0);
+
+  if (!method) {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Deposit" onBack={onBack} />
+        <PaymentMethodPicker onPick={setMethod} />
+      </div>
+    );
+  }
+
+  if (method === "usdt") {
+    return (
+      <DepositCryptoScreen
+        onBack={() => setMethod(null)}
+        onComplete={onComplete}
+        onAddPayment={onAddPayment}
+      />
+    );
+  }
 
   if (stage === "failed") {
     return (
@@ -2908,7 +2982,7 @@ function DepositScreen({ onBack, onComplete, onBalanceSet, onAddPayment }) {
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <MoneyHeader title="Deposit" onBack={onBack} />
+      <MoneyHeader title="Deposit" onBack={() => setMethod(null)} />
       <div className="flex-1 flex justify-center px-4 sm:px-6 py-8">
         <form onSubmit={submit} className="w-full max-w-[420px] flex flex-col gap-5">
           <div
@@ -3006,9 +3080,220 @@ function DepositScreen({ onBack, onComplete, onBalanceSet, onAddPayment }) {
 }
 
 // ---------------------------------------------------------------------------
-// WITHDRAW — to M-Pesa
+// DEPOSIT — USDT (TRC20)
+// ---------------------------------------------------------------------------
+function DepositCryptoScreen({ onBack, onComplete, onAddPayment }) {
+  const [address, setAddress] = useState("");
+  const [loadingConfig, setLoadingConfig] = useState(true);
+  const [configError, setConfigError] = useState("");
+  const [amount, setAmount] = useState("");
+  const [txHash, setTxHash] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [stage, setStage] = useState("form"); // form | submitted
+  const [reference, setReference] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await backendApi("/api/payments/config");
+        if (!cancelled) setAddress(data.usdtTrc20Address || "");
+      } catch (err) {
+        if (!cancelled) setConfigError(err.message || "Couldn't load the deposit address");
+      } finally {
+        if (!cancelled) setLoadingConfig(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function copyAddress() {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard API can be blocked in some in-app browsers — the address
+      // is still selectable/visible, so this just silently no-ops.
+    }
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    const amt = Number(amount);
+    if (!amt || amt <= 0) {
+      setError("Enter the amount you sent");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const data = await backendApi("/api/payments/deposit/crypto", {
+        method: "POST",
+        body: JSON.stringify({ amountUsd: amt, txHash: txHash.trim() }),
+      });
+      setReference(data.reference);
+      onAddPayment?.({
+        id: data.reference,
+        type: "deposit",
+        method: "usdt_trc20",
+        amount: Math.round(amt * 129), // display-only estimate; server holds the authoritative KES figure
+        usdAmount: amt,
+        status: "pending",
+        time: Date.now(),
+      });
+      setStage("submitted");
+    } catch (err) {
+      setError(err.message || "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (stage === "submitted") {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Deposit" onBack={onBack} />
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+          <div
+            className="w-16 h-16 rounded-full flex items-center justify-center mb-6"
+            style={{ background: c.amberDim }}
+          >
+            <Loader2 size={26} style={{ color: c.amber }} />
+          </div>
+          <h2 className="text-lg font-bold mb-2">Deposit submitted</h2>
+          <p className="text-sm max-w-xs mb-2" style={{ color: c.textDim }}>
+            We're watching for your transfer of{" "}
+            <span className="font-semibold" style={{ color: c.text }}>${Number(amount).toFixed(2)} USDT</span>.
+            Your Real balance updates once we confirm it on-chain — usually within a few minutes.
+          </p>
+          <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>Reference: {reference}</p>
+          <button
+            onClick={onComplete}
+            className="h-12 px-6 rounded-2xl text-sm font-bold"
+            style={{ background: c.amber, color: "#181205" }}
+          >
+            Go to dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="Deposit" onBack={onBack} />
+      <div className="flex-1 flex justify-center px-4 sm:px-6 py-8">
+        <form onSubmit={submit} className="w-full max-w-[420px] flex flex-col gap-5">
+          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+            <div className="flex items-center gap-3 mb-3">
+              <div
+                className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+                style={{ background: c.amberDim }}
+              >
+                <Coins size={20} style={{ color: c.amber }} />
+              </div>
+              <div>
+                <div className="text-sm font-bold">Deposit USDT</div>
+                <div className="text-xs" style={{ color: c.textDim }}>TRC20 network</div>
+              </div>
+            </div>
+            <p className="text-xs mb-3" style={{ color: c.textDim }}>
+              Send only <span className="font-semibold" style={{ color: c.text }}>USDT (TRC20)</span> to the
+              address below. Sending any other token or network may result in permanent loss.
+            </p>
+            <div className="text-[11px] font-semibold mb-1" style={{ color: c.textFaint }}>
+              DEPOSIT ADDRESS
+            </div>
+            {loadingConfig ? (
+              <div className="flex items-center gap-2 text-xs" style={{ color: c.textDim }}>
+                <Loader2 size={14} className="animate-spin" /> Loading address…
+              </div>
+            ) : configError ? (
+              <div className="text-xs font-medium" style={{ color: c.red }}>{configError}</div>
+            ) : (
+              <div
+                className="flex items-center gap-2 rounded-xl border px-3 py-2.5"
+                style={{ background: c.bg, borderColor: c.borderStrong }}
+              >
+                <span className="flex-1 text-sm font-mono break-all" style={{ color: c.text }}>{address}</span>
+                <button
+                  type="button"
+                  onClick={copyAddress}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: c.surfaceAlt }}
+                  aria-label="Copy address"
+                >
+                  {copied ? <Check size={15} style={{ color: c.green }} /> : <Copy size={15} style={{ color: c.textDim }} />}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
+              Amount sent (USD)
+            </label>
+            <div
+              className="flex items-center gap-2 h-13 rounded-2xl border px-4"
+              style={{ height: 52, background: c.bg, borderColor: error ? c.red : c.borderStrong }}
+            >
+              <span className="text-sm font-bold" style={{ color: c.textDim }}>$</span>
+              <input
+                value={amount}
+                onChange={(e) => { setAmount(e.target.value.replace(/[^0-9.]/g, "")); setError(""); }}
+                placeholder="0.00"
+                inputMode="decimal"
+                className="flex-1 outline-none text-sm bg-transparent font-semibold"
+                style={{ color: c.text }}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
+              Transaction hash <span className="font-normal" style={{ color: c.textFaint }}>(optional, speeds up confirmation)</span>
+            </label>
+            <Field icon={Info}>
+              <input
+                value={txHash}
+                onChange={(e) => setTxHash(e.target.value)}
+                placeholder="0x…"
+                className="flex-1 outline-none text-sm bg-transparent"
+                style={{ color: c.text }}
+              />
+            </Field>
+          </div>
+
+          {error && <div className="text-xs font-medium -mt-2" style={{ color: c.red }}>{error}</div>}
+
+          <button
+            type="submit"
+            disabled={submitting || loadingConfig || !address}
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mt-1"
+            style={{ height: 52, background: c.amber, color: "#181205", opacity: submitting ? 0.7 : 1 }}
+          >
+            {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
+            I've sent it
+          </button>
+
+          <div className="flex items-center gap-2 justify-center text-xs text-center" style={{ color: c.textFaint }}>
+            <ShieldCheck size={13} />
+            Your balance updates after we manually confirm the transfer
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// WITHDRAW — M-Pesa or USDT (TRC20)
 // ---------------------------------------------------------------------------
 function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPayment, registeredPhone }) {
+  const [method, setMethod] = useState(null); // null | "mpesa" | "usdt"
   const [amount, setAmount] = useState("");
   const [error, setError] = useState({});
   const [stage, setStage] = useState("form"); // form | processing | success | failed
@@ -3057,6 +3342,27 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
   }
 
   const kesEquivalent = kesAmount || (amount ? usdToKes(Number(amount)) : 0);
+
+  if (!method) {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Withdraw" onBack={onBack} />
+        <PaymentMethodPicker onPick={setMethod} />
+      </div>
+    );
+  }
+
+  if (method === "usdt") {
+    return (
+      <WithdrawCryptoScreen
+        onBack={() => setMethod(null)}
+        onComplete={onComplete}
+        balance={balance}
+        onBalanceSet={onBalanceSet}
+        onAddPayment={onAddPayment}
+      />
+    );
+  }
 
   if (stage === "failed") {
     return (
@@ -3141,7 +3447,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
-      <MoneyHeader title="Withdraw" onBack={onBack} />
+      <MoneyHeader title="Withdraw" onBack={() => setMethod(null)} />
       <div className="flex-1 flex justify-center px-4 sm:px-6 py-8">
         <form onSubmit={submit} className="w-full max-w-[420px] flex flex-col gap-5">
           <div
@@ -3256,6 +3562,205 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 }
 
 // ---------------------------------------------------------------------------
+// WITHDRAW — USDT (TRC20)
+// ---------------------------------------------------------------------------
+function WithdrawCryptoScreen({ onBack, onComplete, balance, onBalanceSet, onAddPayment }) {
+  const [walletAddress, setWalletAddress] = useState("");
+  const [amount, setAmount] = useState("");
+  const [error, setError] = useState({});
+  const [stage, setStage] = useState("form"); // form | processing | success | failed
+  const [reference, setReference] = useState("");
+  const [apiError, setApiError] = useState("");
+
+  const TRC20_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
+
+  async function submit(e) {
+    e.preventDefault();
+    const errs = {};
+    if (!TRC20_RE.test(walletAddress.trim())) errs.walletAddress = "Enter a valid TRC20 (USDT) wallet address";
+    const amt = Number(amount);
+    if (!amt || amt < 1) errs.amount = "Minimum withdrawal is $1";
+    else if (balance <= 0) errs.amount = "Insufficient balance";
+    else if (amt > balance) errs.amount = "Insufficient balance for this amount";
+    setError(errs);
+    if (Object.keys(errs).length) return;
+
+    setStage("processing");
+    try {
+      const data = await backendApi("/api/payments/withdraw/crypto", {
+        method: "POST",
+        body: JSON.stringify({ amountUsd: amt, walletAddress: walletAddress.trim() }),
+      });
+      setReference(data.reference);
+      onBalanceSet?.(data.balance);
+      onAddPayment?.({
+        id: data.reference,
+        type: "withdrawal",
+        method: "usdt_trc20",
+        amount: data.amountKes,
+        usdAmount: amt,
+        walletAddress: walletAddress.trim(),
+        status: "pending",
+        time: Date.now(),
+      });
+      setStage("success");
+    } catch (err) {
+      setApiError(err.message || "Something went wrong");
+      setStage("failed");
+    }
+  }
+
+  if (stage === "failed") {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Withdraw" onBack={onBack} />
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+          <div className="w-16 h-16 rounded-full flex items-center justify-center mb-6" style={{ background: c.redDim }}>
+            <X size={26} style={{ color: c.red }} />
+          </div>
+          <h2 className="text-lg font-bold mb-2">Withdrawal request failed</h2>
+          <p className="text-sm max-w-xs mb-8" style={{ color: c.textDim }}>{apiError}</p>
+          <button
+            onClick={() => setStage("form")}
+            className="h-12 px-6 rounded-2xl text-sm font-bold"
+            style={{ background: c.amber, color: "#181205" }}
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (stage === "processing") {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Withdraw" onBack={onBack} />
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+          <div className="w-16 h-16 rounded-full flex items-center justify-center mb-6" style={{ background: c.amberDim }}>
+            <Loader2 size={28} style={{ color: c.amber }} className="animate-spin" />
+          </div>
+          <h2 className="text-lg font-bold mb-2">Submitting your request…</h2>
+          <p className="text-sm max-w-xs break-all" style={{ color: c.textDim }}>
+            ${Number(amount).toFixed(2)} USDT to <span style={{ color: c.text }}>{walletAddress}</span>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (stage === "success") {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Withdraw" onBack={onBack} />
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+          <div className="w-16 h-16 rounded-full flex items-center justify-center mb-6" style={{ background: "rgba(22,199,132,0.14)" }}>
+            <CheckCircle2 size={30} style={{ color: c.green }} />
+          </div>
+          <h2 className="text-lg font-bold mb-2">Withdrawal submitted successfully</h2>
+          <p className="text-sm max-w-xs mb-2 break-all" style={{ color: c.textDim }}>
+            Your request to withdraw{" "}
+            <span className="font-semibold" style={{ color: c.text }}>${Number(amount).toFixed(2)} USDT</span> to{" "}
+            {walletAddress} has been received. Our team will process this manually and disburse the funds shortly.
+          </p>
+          <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>Reference: {reference}</p>
+          <button
+            onClick={onComplete}
+            className="h-12 px-6 rounded-2xl text-sm font-bold"
+            style={{ background: c.amber, color: "#181205" }}
+          >
+            Go to dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="Withdraw" onBack={onBack} />
+      <div className="flex-1 flex justify-center px-4 sm:px-6 py-8">
+        <form onSubmit={submit} className="w-full max-w-[420px] flex flex-col gap-5">
+          <div className="rounded-2xl border p-4" style={{ background: c.surface, borderColor: c.border }}>
+            <div className="text-xs font-semibold mb-1" style={{ color: c.textDim }}>Real account balance</div>
+            <div className="text-2xl font-bold font-mono">
+              ${balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
+              TRC20 wallet address
+            </label>
+            <Field icon={Coins} error={error.walletAddress}>
+              <input
+                value={walletAddress}
+                onChange={(e) => { setWalletAddress(e.target.value); setError((er) => ({ ...er, walletAddress: undefined })); }}
+                placeholder="T…"
+                className="flex-1 outline-none text-sm bg-transparent font-mono"
+                style={{ color: c.text }}
+              />
+            </Field>
+            <p className="text-[11px] mt-1.5" style={{ color: c.textFaint }}>
+              Double-check this address — sending to the wrong one can't be reversed.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
+              Amount (USD)
+            </label>
+            <div
+              className="flex items-center gap-2 h-13 rounded-2xl border px-4 mb-1.5"
+              style={{ height: 52, background: c.bg, borderColor: error.amount ? c.red : c.borderStrong }}
+            >
+              <span className="text-sm font-bold" style={{ color: c.textDim }}>$</span>
+              <input
+                value={amount}
+                onChange={(e) => { setAmount(e.target.value.replace(/[^0-9.]/g, "")); setError((er) => ({ ...er, amount: undefined })); }}
+                placeholder="0"
+                inputMode="decimal"
+                className="flex-1 outline-none text-sm bg-transparent font-semibold"
+                style={{ color: c.text }}
+              />
+              <button
+                type="button"
+                onClick={() => setAmount(String(balance))}
+                className="text-xs font-bold"
+                style={{ color: c.amber }}
+              >
+                MAX
+              </button>
+            </div>
+            {error.amount && <div className="text-xs font-medium mb-3" style={{ color: c.red }}>{error.amount}</div>}
+            <AmountChips
+              value={amount}
+              onPick={(a) => setAmount(String(a))}
+              tiers={USD_QUICK_AMOUNTS}
+              formatLabel={(a) => `$${a}`}
+            />
+          </div>
+
+          <button
+            type="submit"
+            className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mt-1"
+            style={{ height: 52, background: c.amber, color: "#181205" }}
+          >
+            Submit withdrawal request
+            <ArrowRight size={16} />
+          </button>
+
+          <div className="flex items-center gap-2 justify-center text-xs" style={{ color: c.textFaint }}>
+            <ShieldCheck size={13} />
+            Withdrawals are reviewed and sent manually
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // TRADE HISTORY
 // ---------------------------------------------------------------------------
 function relativeTime(ts) {
@@ -3271,6 +3776,7 @@ function relativeTime(ts) {
 
 function PaymentRow({ p }) {
   const isDeposit = p.type === "deposit";
+  const isCrypto = p.method === "usdt_trc20";
   const pending = p.status === "pending";
   const rejected = p.status === "rejected";
   const failed = p.status === "failed";
@@ -3278,6 +3784,14 @@ function PaymentRow({ p }) {
 
   const statusLabel = pending ? "Pending" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
   const statusColor = pending ? c.amber : rejected || failed ? c.red : c.green;
+
+  const title = isCrypto
+    ? (isDeposit ? "USDT deposit" : "Withdrawal to USDT wallet")
+    : (isDeposit ? "M-Pesa deposit" : "Withdrawal to M-Pesa");
+
+  const destination = isCrypto
+    ? (p.walletAddress ? `${p.walletAddress.slice(0, 6)}…${p.walletAddress.slice(-4)}` : "")
+    : p.phone;
 
   return (
     <div
@@ -3297,26 +3811,28 @@ function PaymentRow({ p }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
           <span className="text-sm font-bold truncate">
-            {isDeposit ? "M-Pesa deposit" : "Withdrawal to M-Pesa"}
+            {title}
           </span>
           <span
             className="text-sm font-bold font-mono flex-shrink-0"
             style={{ color: isDeposit ? c.green : c.amber }}
           >
-            {isDeposit ? "+" : "-"}KES {p.amount.toLocaleString()}
+            {isCrypto
+              ? `${isDeposit ? "+" : "-"}$${(p.usdAmount ?? 0).toFixed(2)}`
+              : `${isDeposit ? "+" : "-"}KES ${p.amount.toLocaleString()}`}
           </span>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
-          <span className="text-xs flex items-center gap-1.5" style={{ color: c.textDim }}>
-            {p.phone}
+          <span className="text-xs flex items-center gap-1.5 font-mono" style={{ color: c.textDim }}>
+            {destination}
             {statusLabel && (
-              <span className="font-semibold" style={{ color: statusColor }}>
+              <span className="font-semibold font-sans" style={{ color: statusColor }}>
                 · {statusLabel}
               </span>
             )}
           </span>
           <span className="text-xs flex-shrink-0 font-mono" style={{ color: c.textFaint }}>
-            {p.usdAmount != null ? `≈ $${p.usdAmount.toFixed(2)} · ` : ""}
+            {isCrypto ? "" : p.usdAmount != null ? `≈ $${p.usdAmount.toFixed(2)} · ` : ""}
             {relativeTime(p.time)}
           </span>
         </div>
