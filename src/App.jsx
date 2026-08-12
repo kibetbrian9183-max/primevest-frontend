@@ -2029,9 +2029,12 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
   const [form, setForm] = useState({
     name: "",
     email: "",
+    phone: "",
     password: "",
     confirm: "",
   });
+
+  const [showForgot, setShowForgot] = useState(false);
 
   const spark = useSparkline();
   const sparkUp = spark[spark.length - 1].v >= spark[0].v;
@@ -2054,6 +2057,8 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
     if (mode === "signup" && !form.name.trim()) e.name = "Enter your full name";
     if (!form.email.trim()) e.email = "Enter your email";
     else if (!/^\S+@\S+\.\S+$/.test(form.email)) e.email = "Enter a valid email";
+    if (mode === "signup" && !isValidKenyanNumber(form.phone))
+      e.phone = "Enter a valid Safaricom number";
     if (!form.password) e.password = "Enter your password";
     else if (mode === "signup" && form.password.length < 8)
       e.password = "Use at least 8 characters";
@@ -2069,7 +2074,14 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
     setErrors(e);
     if (Object.keys(e).length > 0) return;
     setSubmitting(true);
-    await onAuth?.({ mode, name: form.name, email: form.email, password: form.password, remember });
+    await onAuth?.({
+      mode,
+      name: form.name,
+      email: form.email,
+      phone: mode === "signup" ? toMsisdn254(form.phone) : undefined,
+      password: form.password,
+      remember,
+    });
     setSubmitting(false);
   }
 
@@ -2077,6 +2089,10 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
     color: c.text,
     background: "transparent",
   };
+
+  if (showForgot) {
+    return <ForgotPasswordScreen onBack={() => setShowForgot(false)} />;
+  }
 
   return (
     <div
@@ -2248,6 +2264,21 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
               />
             </Field>
 
+            {mode === "signup" && (
+              <Field icon={Smartphone} error={errors.phone}>
+                <input
+                  value={form.phone}
+                  onChange={(e) => update("phone", e.target.value)}
+                  onBlur={() => setForm((f) => ({ ...f, phone: f.phone ? toMsisdn254(f.phone) : f.phone }))}
+                  placeholder="M-Pesa phone number"
+                  type="tel"
+                  autoComplete="tel"
+                  className="flex-1 outline-none text-sm"
+                  style={inputStyle}
+                />
+              </Field>
+            )}
+
             <Field icon={Lock} error={errors.password}>
               <input
                 value={form.password}
@@ -2316,6 +2347,7 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
                   type="button"
                   className="text-xs font-semibold"
                   style={{ color: c.amber }}
+                  onClick={() => setShowForgot(true)}
                 >
                   Forgot password?
                 </button>
@@ -2400,6 +2432,239 @@ function AuthScreen({ onAuth, authError, clearAuthError }) {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Forgot password — phone -> SMS OTP -> new password, three steps against
+// the backend's /api/auth/forgot-password, /verify-reset-otp, /reset-password.
+// ---------------------------------------------------------------------------
+function ForgotPasswordScreen({ onBack }) {
+  const [step, setStep] = useState("phone"); // phone | otp | newpass | done
+  const [phone, setPhone] = useState("");
+  const [otp, setOtp] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function requestOtp(ev) {
+    ev.preventDefault();
+    setError("");
+    if (!isValidKenyanNumber(phone)) return setError("Enter a valid Safaricom number");
+    setSubmitting(true);
+    try {
+      await backendApi("/api/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ phone: toMsisdn254(phone) }),
+      });
+      setStep("otp");
+    } catch (err) {
+      setError(err.message || "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function verifyOtp(ev) {
+    ev.preventDefault();
+    setError("");
+    if (otp.trim().length !== 6) return setError("Enter the 6-digit code");
+    setSubmitting(true);
+    try {
+      const data = await backendApi("/api/auth/verify-reset-otp", {
+        method: "POST",
+        body: JSON.stringify({ phone: toMsisdn254(phone), otp: otp.trim() }),
+      });
+      setResetToken(data.resetToken);
+      setStep("newpass");
+    } catch (err) {
+      setError(err.message || "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function resetPassword(ev) {
+    ev.preventDefault();
+    setError("");
+    if (newPassword.length < 8) return setError("Use at least 8 characters");
+    if (newPassword !== confirm) return setError("Passwords don't match");
+    setSubmitting(true);
+    try {
+      await backendApi("/api/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ resetToken, newPassword }),
+      });
+      setStep("done");
+    } catch (err) {
+      setError(err.message || "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const inputStyle = { color: c.text, background: "transparent" };
+
+  return (
+    <div className="min-h-screen w-full font-sans flex items-center justify-center px-6" style={{ background: c.bg, color: c.text }}>
+      <div className="w-full max-w-sm">
+        {step !== "done" && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="flex items-center gap-1.5 text-sm font-medium mb-8"
+            style={{ color: c.textDim }}
+          >
+            <ArrowLeft size={16} /> Back to login
+          </button>
+        )}
+
+        {step === "phone" && (
+          <form onSubmit={requestOtp}>
+            <div className="w-11 h-11 rounded-2xl flex items-center justify-center mb-5" style={{ background: c.amberDim }}>
+              <Smartphone size={20} style={{ color: c.amber }} />
+            </div>
+            <h1 className="text-xl font-bold mb-1.5">Reset your password</h1>
+            <p className="text-sm mb-6" style={{ color: c.textDim }}>
+              Enter the phone number on your account. We'll text a 6-digit code to it.
+            </p>
+            <Field icon={Smartphone} error={error}>
+              <input
+                value={phone}
+                onChange={(e) => { setPhone(e.target.value); setError(""); }}
+                placeholder="M-Pesa phone number"
+                type="tel"
+                autoComplete="tel"
+                className="flex-1 outline-none text-sm"
+                style={inputStyle}
+              />
+            </Field>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full h-13 rounded-2xl font-semibold text-sm mt-5 flex items-center justify-center gap-2"
+              style={{ height: 52, background: c.amber, color: "#181205", opacity: submitting ? 0.7 : 1 }}
+            >
+              {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
+              Send reset code
+            </button>
+          </form>
+        )}
+
+        {step === "otp" && (
+          <form onSubmit={verifyOtp}>
+            <div className="w-11 h-11 rounded-2xl flex items-center justify-center mb-5" style={{ background: c.amberDim }}>
+              <ShieldCheck size={20} style={{ color: c.amber }} />
+            </div>
+            <h1 className="text-xl font-bold mb-1.5">Enter the code</h1>
+            <p className="text-sm mb-6" style={{ color: c.textDim }}>
+              We sent a 6-digit code to <span style={{ color: c.text }}>{toMsisdn254(phone)}</span>.
+            </p>
+            <Field icon={ShieldCheck} error={error}>
+              <input
+                value={otp}
+                onChange={(e) => { setOtp(e.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }}
+                placeholder="6-digit code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                className="flex-1 outline-none text-sm tracking-[0.3em]"
+                style={inputStyle}
+              />
+            </Field>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full h-13 rounded-2xl font-semibold text-sm mt-5 flex items-center justify-center gap-2"
+              style={{ height: 52, background: c.amber, color: "#181205", opacity: submitting ? 0.7 : 1 }}
+            >
+              {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
+              Verify code
+            </button>
+            <button
+              type="button"
+              onClick={() => setStep("phone")}
+              className="w-full text-xs font-semibold mt-4"
+              style={{ color: c.textDim }}
+            >
+              Wrong number? Start over
+            </button>
+          </form>
+        )}
+
+        {step === "newpass" && (
+          <form onSubmit={resetPassword}>
+            <div className="w-11 h-11 rounded-2xl flex items-center justify-center mb-5" style={{ background: c.amberDim }}>
+              <Lock size={20} style={{ color: c.amber }} />
+            </div>
+            <h1 className="text-xl font-bold mb-1.5">Set a new password</h1>
+            <p className="text-sm mb-6" style={{ color: c.textDim }}>
+              Choose a new password for your account.
+            </p>
+            <div className="flex flex-col gap-3.5">
+              <Field icon={Lock} error={error}>
+                <input
+                  value={newPassword}
+                  onChange={(e) => { setNewPassword(e.target.value); setError(""); }}
+                  placeholder="New password"
+                  type={showPw ? "text" : "password"}
+                  autoComplete="new-password"
+                  className="flex-1 outline-none text-sm"
+                  style={inputStyle}
+                />
+                <button type="button" onClick={() => setShowPw((v) => !v)} aria-label={showPw ? "Hide password" : "Show password"}>
+                  {showPw ? <EyeOff size={17} style={{ color: c.textFaint }} /> : <Eye size={17} style={{ color: c.textFaint }} />}
+                </button>
+              </Field>
+              <Field icon={Lock}>
+                <input
+                  value={confirm}
+                  onChange={(e) => { setConfirm(e.target.value); setError(""); }}
+                  placeholder="Confirm new password"
+                  type={showPw ? "text" : "password"}
+                  autoComplete="new-password"
+                  className="flex-1 outline-none text-sm"
+                  style={inputStyle}
+                />
+              </Field>
+            </div>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full h-13 rounded-2xl font-semibold text-sm mt-5 flex items-center justify-center gap-2"
+              style={{ height: 52, background: c.amber, color: "#181205", opacity: submitting ? 0.7 : 1 }}
+            >
+              {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
+              Reset password
+            </button>
+          </form>
+        )}
+
+        {step === "done" && (
+          <div className="text-center">
+            <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-5 mx-auto" style={{ background: c.greenDim }}>
+              <CheckCircle2 size={26} style={{ color: c.green }} />
+            </div>
+            <h1 className="text-xl font-bold mb-1.5">Password reset</h1>
+            <p className="text-sm mb-8" style={{ color: c.textDim }}>
+              Your password has been changed. Log in with your new password.
+            </p>
+            <button
+              type="button"
+              onClick={onBack}
+              className="w-full h-13 rounded-2xl font-semibold text-sm"
+              style={{ height: 52, background: c.amber, color: "#181205" }}
+            >
+              Back to login
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -4640,11 +4905,11 @@ export default function App() {
     setTrades((list) => list.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   const addPayment = (entry) => setPayments((p) => [entry, ...p]);
 
-  async function handleAuth({ mode, name, email, password, remember }) {
+  async function handleAuth({ mode, name, email, phone, password, remember }) {
     try {
       const data = await backendApi(mode === "signup" ? "/api/auth/signup" : "/api/auth/login", {
         method: "POST",
-        body: JSON.stringify(mode === "signup" ? { name, email, password } : { email, password }),
+        body: JSON.stringify(mode === "signup" ? { name, email, phone, password } : { email, password }),
       });
       setAuthError("");
 
