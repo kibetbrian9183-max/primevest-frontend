@@ -3696,11 +3696,33 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
   const [reference, setReference] = useState("");
   const [apiError, setApiError] = useState("");
   const [kesAmount, setKesAmount] = useState(0);
+  const [phones, setPhones] = useState(registeredPhone ? [registeredPhone] : []);
+  const [selectedPhone, setSelectedPhone] = useState(registeredPhone || "");
+  const [loadingPhones, setLoadingPhones] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await backendApi("/api/payments/verified-phones");
+        if (cancelled) return;
+        const list = data.phones?.length ? data.phones : (registeredPhone ? [registeredPhone] : []);
+        setPhones(list);
+        setSelectedPhone((prev) => (prev && list.includes(prev) ? prev : list[0] || ""));
+      } catch {
+        // Fall back to just the registered number — withdrawal still works,
+        // it just won't offer the extra deposit-verified numbers.
+      } finally {
+        if (!cancelled) setLoadingPhones(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [registeredPhone]);
 
   async function submit(e) {
     e.preventDefault();
     const errs = {};
-    if (!registeredPhone) {
+    if (!selectedPhone) {
       errs.amount = "Add a phone number to your account in Settings before withdrawing";
     }
     const amt = Number(amount);
@@ -3712,11 +3734,9 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 
     setStage("processing");
     try {
-      // Payouts always go to the phone number on the account — never a
-      // client-editable field — so the backend doesn't accept one here either.
       const data = await backendApi("/api/payments/withdraw", {
         method: "POST",
-        body: JSON.stringify({ amountUsd: amt }),
+        body: JSON.stringify({ amountUsd: amt, phone: selectedPhone }),
       });
       setReference(data.reference);
       setKesAmount(data.amountKes);
@@ -3726,7 +3746,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
         type: "withdrawal",
         amount: data.amountKes,
         usdAmount: amt,
-        phone: registeredPhone,
+        phone: selectedPhone,
         status: "pending",
         time: Date.now(),
       });
@@ -3799,7 +3819,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           <h2 className="text-lg font-bold mb-2">Submitting your request…</h2>
           <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
             ${Number(amount).toFixed(2)} (KES {kesEquivalent.toLocaleString()}) to{" "}
-            <span style={{ color: c.text }}>{registeredPhone}</span>
+            <span style={{ color: c.text }}>{selectedPhone}</span>
           </p>
         </div>
       </div>
@@ -3823,7 +3843,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
             <span className="font-semibold" style={{ color: c.text }}>
               KES {kesEquivalent.toLocaleString()}
             </span>
-            ) to {registeredPhone} has been received. Our team will process this manually and disburse the funds
+            ) to {selectedPhone} has been received. Our team will process this manually and disburse the funds
             shortly.
           </p>
           <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>
@@ -3862,19 +3882,51 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
             <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
               M-Pesa phone number
             </label>
-            {registeredPhone ? (
+            {loadingPhones ? (
               <div
-                className="flex items-center gap-2.5 h-13 rounded-2xl border px-4"
-                style={{ height: 52, background: c.surfaceAlt, borderColor: c.border }}
+                className="flex items-center gap-2 h-13 rounded-2xl border px-4"
+                style={{ height: 52, background: c.surfaceAlt, borderColor: c.border, color: c.textDim }}
               >
-                <Smartphone size={17} style={{ color: c.textFaint, flexShrink: 0 }} />
-                <span className="flex-1 text-sm" style={{ color: c.text }}>{registeredPhone}</span>
-                <span
-                  className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
-                  style={{ background: c.amberDim, color: c.amber }}
-                >
-                  Registered number
-                </span>
+                <Loader2 size={15} className="animate-spin" />
+                <span className="text-xs">Loading your verified numbers…</span>
+              </div>
+            ) : phones.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {phones.map((p) => {
+                  const isSelected = p === selectedPhone;
+                  const isRegistered = p === registeredPhone;
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setSelectedPhone(p)}
+                      className="flex items-center gap-2.5 h-13 rounded-2xl border px-4 text-left"
+                      style={{
+                        height: 52,
+                        background: isSelected ? c.amberDim : c.surfaceAlt,
+                        borderColor: isSelected ? c.amber : c.border,
+                      }}
+                    >
+                      <div
+                        className="w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0"
+                        style={{ borderColor: isSelected ? c.amber : c.borderStrong }}
+                      >
+                        {isSelected && <div className="w-2 h-2 rounded-full" style={{ background: c.amber }} />}
+                      </div>
+                      <Smartphone size={17} style={{ color: c.textFaint, flexShrink: 0 }} />
+                      <span className="flex-1 text-sm" style={{ color: c.text }}>{p}</span>
+                      <span
+                        className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                        style={{
+                          background: isRegistered ? c.amberDim : c.greenDim,
+                          color: isRegistered ? c.amber : c.green,
+                        }}
+                      >
+                        {isRegistered ? "Registered" : "Verified deposit"}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             ) : (
               <div
@@ -3888,7 +3940,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
               </div>
             )}
             <p className="text-[11px] mt-1.5" style={{ color: c.textFaint }}>
-              Withdrawals always go to the phone number on your account, for your security.
+              You can withdraw to your registered number or any number you've made a real deposit from.
             </p>
           </div>
 
@@ -3939,9 +3991,9 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 
           <button
             type="submit"
-            disabled={!registeredPhone}
+            disabled={!selectedPhone}
             className="h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mt-1"
-            style={{ height: 52, background: c.amber, color: "#181205", opacity: registeredPhone ? 1 : 0.5 }}
+            style={{ height: 52, background: c.amber, color: "#181205", opacity: selectedPhone ? 1 : 0.5 }}
           >
             Submit withdrawal request
             <ArrowRight size={16} />
