@@ -4305,12 +4305,13 @@ function PaymentRow({ p }) {
   const isDeposit = p.type === "deposit";
   const isCrypto = p.method === "usdt_trc20";
   const pending = p.status === "pending";
+  const approved = p.status === "approved";
   const rejected = p.status === "rejected";
   const failed = p.status === "failed";
   const completed = p.status === "completed" || p.status === "success";
 
-  const statusLabel = pending ? "Pending" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
-  const statusColor = pending ? c.amber : rejected || failed ? c.red : c.green;
+  const statusLabel = pending ? "Pending" : approved ? "Approved" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
+  const statusColor = pending || approved ? c.amber : rejected || failed ? c.red : c.green;
 
   const title = isCrypto
     ? (isDeposit ? "USDT deposit" : "Withdrawal to USDT wallet")
@@ -4327,12 +4328,12 @@ function PaymentRow({ p }) {
     >
       <div
         className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: pending ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
+        style={{ background: pending || approved ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
       >
         {isDeposit ? (
           <ArrowDownRight size={18} style={{ color: c.green }} />
         ) : (
-          <ArrowUpRight size={18} style={{ color: pending ? c.amber : c.red }} />
+          <ArrowUpRight size={18} style={{ color: pending || approved ? c.amber : c.red }} />
         )}
       </div>
       <div className="flex-1 min-w-0">
