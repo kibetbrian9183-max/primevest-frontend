@@ -2457,8 +2457,8 @@ function AuthScreen({ onAuth, authError, clearAuthError, initialMode }) {
     if (mode === "signup" && !form.name.trim()) e.name = "Enter your full name";
     if (!form.email.trim()) e.email = "Enter your email";
     else if (!/^\S+@\S+\.\S+$/.test(form.email)) e.email = "Enter a valid email";
-    if (mode === "signup" && !isValidKenyanNumber(form.phone))
-      e.phone = "Enter a valid Safaricom number";
+    if (mode === "signup" && !isValidPhoneNumber(form.phone))
+      e.phone = "Enter a valid phone number (Kenyan or with country code, e.g. +1 415 555 0100)";
     if (!form.password) e.password = "Enter your password";
     else if (mode === "signup" && form.password.length < 8)
       e.password = "Use at least 8 characters";
@@ -2478,7 +2478,7 @@ function AuthScreen({ onAuth, authError, clearAuthError, initialMode }) {
       mode,
       name: form.name,
       email: form.email,
-      phone: mode === "signup" ? toMsisdn254(form.phone) : undefined,
+      phone: mode === "signup" ? toInternationalPhone(form.phone) : undefined,
       password: form.password,
       remember,
     });
@@ -2665,18 +2665,25 @@ function AuthScreen({ onAuth, authError, clearAuthError, initialMode }) {
             </Field>
 
             {mode === "signup" && (
-              <Field icon={Smartphone} error={errors.phone}>
-                <input
-                  value={form.phone}
-                  onChange={(e) => update("phone", e.target.value)}
-                  onBlur={() => setForm((f) => ({ ...f, phone: f.phone ? toMsisdn254(f.phone) : f.phone }))}
-                  placeholder="M-Pesa phone number"
-                  type="tel"
-                  autoComplete="tel"
-                  className="flex-1 outline-none text-sm"
-                  style={inputStyle}
-                />
-              </Field>
+              <div>
+                <Field icon={Smartphone} error={errors.phone}>
+                  <input
+                    value={form.phone}
+                    onChange={(e) => update("phone", e.target.value)}
+                    onBlur={() => setForm((f) => (f.phone ? { ...f, phone: toInternationalPhone(f.phone) } : f))}
+                    placeholder="Phone number"
+                    type="tel"
+                    autoComplete="tel"
+                    className="flex-1 outline-none text-sm"
+                    style={inputStyle}
+                  />
+                </Field>
+                {!errors.phone && (
+                  <p className="text-[11px] mt-1.5 px-1" style={{ color: c.textFaint }}>
+                    Kenyan number? Just type it normally (07XX XXX XXX). Outside Kenya, include your country code (e.g. +1, +44).
+                  </p>
+                )}
+              </div>
             )}
 
             <Field icon={Lock} error={errors.password}>
@@ -2844,7 +2851,9 @@ function AuthScreen({ onAuth, authError, clearAuthError, initialMode }) {
 // ---------------------------------------------------------------------------
 function ForgotPasswordScreen({ onBack }) {
   const [step, setStep] = useState("phone"); // phone | otp | newpass | done
+  const [channel, setChannel] = useState("sms"); // "sms" | "email"
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [resetToken, setResetToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -2853,15 +2862,21 @@ function ForgotPasswordScreen({ onBack }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const destination = channel === "email" ? email.trim().toLowerCase() : toInternationalPhone(phone);
+
   async function requestOtp(ev) {
     ev.preventDefault();
     setError("");
-    if (!isValidKenyanNumber(phone)) return setError("Enter a valid Safaricom number");
+    if (channel === "email") {
+      if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setError("Enter a valid email address");
+    } else {
+      if (!isValidPhoneNumber(phone)) return setError("Enter a valid phone number, including country code if you're outside Kenya");
+    }
     setSubmitting(true);
     try {
       await backendApi("/api/auth/forgot-password", {
         method: "POST",
-        body: JSON.stringify({ phone: toMsisdn254(phone) }),
+        body: JSON.stringify(channel === "email" ? { email: destination } : { phone: destination }),
       });
       setStep("otp");
     } catch (err) {
@@ -2879,7 +2894,9 @@ function ForgotPasswordScreen({ onBack }) {
     try {
       const data = await backendApi("/api/auth/verify-reset-otp", {
         method: "POST",
-        body: JSON.stringify({ phone: toMsisdn254(phone), otp: otp.trim() }),
+        body: JSON.stringify(
+          channel === "email" ? { email: destination, otp: otp.trim() } : { phone: destination, otp: otp.trim() }
+        ),
       });
       setResetToken(data.resetToken);
       setStep("newpass");
@@ -2928,23 +2945,59 @@ function ForgotPasswordScreen({ onBack }) {
         {step === "phone" && (
           <form onSubmit={requestOtp}>
             <div className="w-11 h-11 rounded-2xl flex items-center justify-center mb-5" style={{ background: c.amberDim }}>
-              <Smartphone size={20} style={{ color: c.amber }} />
+              {channel === "email" ? <Mail size={20} style={{ color: c.amber }} /> : <Smartphone size={20} style={{ color: c.amber }} />}
             </div>
             <h1 className="text-xl font-bold mb-1.5">Reset your password</h1>
-            <p className="text-sm mb-6" style={{ color: c.textDim }}>
-              Enter the phone number on your account. We'll text a 6-digit code to it.
+            <p className="text-sm mb-5" style={{ color: c.textDim }}>
+              {channel === "email"
+                ? "Enter the email on your account. We'll send a 6-digit code to it."
+                : "Enter the phone number on your account. We'll text a 6-digit code to it."}
             </p>
-            <Field icon={Smartphone} error={error}>
-              <input
-                value={phone}
-                onChange={(e) => { setPhone(e.target.value); setError(""); }}
-                placeholder="M-Pesa phone number"
-                type="tel"
-                autoComplete="tel"
-                className="flex-1 outline-none text-sm"
-                style={inputStyle}
-              />
-            </Field>
+
+            <div className="flex items-center rounded-full p-1 mb-5" style={{ background: c.surfaceAlt }}>
+              <button
+                type="button"
+                onClick={() => { setChannel("sms"); setError(""); }}
+                className="flex-1 h-9 rounded-full text-xs font-bold transition-colors"
+                style={{ background: channel === "sms" ? c.amber : "transparent", color: channel === "sms" ? "#181205" : c.textDim }}
+              >
+                Phone (SMS)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setChannel("email"); setError(""); }}
+                className="flex-1 h-9 rounded-full text-xs font-bold transition-colors"
+                style={{ background: channel === "email" ? c.amber : "transparent", color: channel === "email" ? "#181205" : c.textDim }}
+              >
+                Email
+              </button>
+            </div>
+
+            {channel === "email" ? (
+              <Field icon={Mail} error={error}>
+                <input
+                  value={email}
+                  onChange={(e) => { setEmail(e.target.value); setError(""); }}
+                  placeholder="Email address"
+                  type="email"
+                  autoComplete="email"
+                  className="flex-1 outline-none text-sm"
+                  style={inputStyle}
+                />
+              </Field>
+            ) : (
+              <Field icon={Smartphone} error={error}>
+                <input
+                  value={phone}
+                  onChange={(e) => { setPhone(e.target.value); setError(""); }}
+                  placeholder="Phone number"
+                  type="tel"
+                  autoComplete="tel"
+                  className="flex-1 outline-none text-sm"
+                  style={inputStyle}
+                />
+              </Field>
+            )}
             <button
               type="submit"
               disabled={submitting}
@@ -2964,7 +3017,7 @@ function ForgotPasswordScreen({ onBack }) {
             </div>
             <h1 className="text-xl font-bold mb-1.5">Enter the code</h1>
             <p className="text-sm mb-6" style={{ color: c.textDim }}>
-              We sent a 6-digit code to <span style={{ color: c.text }}>{toMsisdn254(phone)}</span>.
+              We sent a 6-digit code to <span style={{ color: c.text }}>{destination}</span>.
             </p>
             <Field icon={ShieldCheck} error={error}>
               <input
@@ -2993,7 +3046,7 @@ function ForgotPasswordScreen({ onBack }) {
               className="w-full text-xs font-semibold mt-4"
               style={{ color: c.textDim }}
             >
-              Wrong number? Start over
+              {channel === "email" ? "Wrong email? Start over" : "Wrong number? Start over"}
             </button>
           </form>
         )}
@@ -3152,6 +3205,32 @@ function toMsisdn254(raw) {
 
 function isValidKenyanNumber(raw) {
   return /^254(7|1)\d{8}$/.test(toMsisdn254(raw));
+}
+
+// General, non-Kenya-locked phone handling for account-level fields
+// (signup, password reset, Settings) — this app has users outside Kenya
+// too, and M-Pesa is only one of several deposit/withdraw rails.
+// Mirrors the backend's normalizePhoneInternational exactly so what the
+// user sees validated here is what the server will actually accept.
+function toInternationalPhone(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("+")) {
+    const digits = trimmed.replace(/[^\d]/g, "");
+    return "+" + digits;
+  }
+  const kenyan = toMsisdn254(trimmed);
+  return kenyan;
+}
+
+function isValidPhoneNumber(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("+")) {
+    const digits = trimmed.replace(/[^\d]/g, "");
+    return digits.length >= 8 && digits.length <= 15;
+  }
+  return isValidKenyanNumber(trimmed);
 }
 
 // ---------------------------------------------------------------------------
@@ -5102,15 +5181,15 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
 
   async function savePhone(e) {
     e.preventDefault();
-    if (!isValidKenyanNumber(phone)) {
-      setPhoneError("Enter a valid Safaricom number");
+    if (!isValidPhoneNumber(phone)) {
+      setPhoneError("Enter a valid phone number, including country code if you're outside Kenya");
       return;
     }
     setPhoneError("");
     try {
       const { user: updated } = await backendApi("/api/auth/me", {
         method: "PATCH",
-        body: JSON.stringify({ phone: toMsisdn254(phone) }),
+        body: JSON.stringify({ phone: toInternationalPhone(phone) }),
       });
       onUpdateUser?.({ phone: updated.phone });
       setPhone(updated.phone);
@@ -5331,15 +5410,15 @@ function AccountSettingsScreen({ onBack, user, onUpdateUser }) {
             <form onSubmit={savePhone} className="flex flex-col gap-3">
               {!user?.phone && (
                 <p className="text-xs -mt-1" style={{ color: c.textDim }}>
-                  Withdrawals and password-reset codes are sent to this number. Add it to enable both.
+                  Password-reset codes are sent to this number, and Kenyan numbers can also withdraw and deposit via M-Pesa directly. Add it to enable both.
                 </p>
               )}
               <Field icon={Smartphone} error={phoneError}>
                 <input
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  onBlur={() => setPhone((p) => (p ? toMsisdn254(p) : p))}
-                  placeholder="07XX XXX XXX"
+                  onBlur={() => setPhone((p) => (p ? toInternationalPhone(p) : p))}
+                  placeholder="07XX XXX XXX or +1 415 555 0100"
                   inputMode="tel"
                   className="flex-1 outline-none text-sm bg-transparent"
                   style={{ color: c.text }}
