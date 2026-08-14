@@ -1503,7 +1503,7 @@ function TradingDashboard({
                 </div>
               </div>
 
-              <div className="h-64 sm:h-80 w-full pt-16 pb-1 px-1 sm:px-2">
+              <div className="h-[420px] sm:h-[480px] w-full pt-16 pb-1 px-1 sm:px-2">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={visibleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                     <defs>
