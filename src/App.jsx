@@ -715,7 +715,7 @@ function TradingDashboard({
   const [symbolMenuOpen, setSymbolMenuOpen] = useState(false);
   const symbol = SYMBOLS.find((s) => s.id === symbolId) || SYMBOLS[0];
   const [data, setData] = useState(() => makeInitialSeries(symbol.base, 80));
-  const [zoomPoints, setZoomPoints] = useState(40);
+  const [zoomPoints, setZoomPoints] = useState(20);
   const [historicalView, setHistoricalView] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [darkTheme, setDarkTheme] = useState(true);
@@ -728,6 +728,12 @@ function TradingDashboard({
   const [stopLoss, setStopLoss] = useState("999");
   const [multiplier, setMultiplier] = useState("2");
   const [selectedDigit, setSelectedDigit] = useState(5);
+  const [nowClock, setNowClock] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = setInterval(() => setNowClock(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
   const [flash, setFlash] = useState(null);
   const [digitStats, setDigitStats] = useState(INITIAL_DIGIT_STATS);
   const [tradeInFlight, setTradeInFlight] = useState(false);
@@ -1551,6 +1557,13 @@ function TradingDashboard({
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
+            </div>
+
+            <div className="flex items-center justify-center gap-1.5 mb-4 -mt-1">
+              <Clock size={12} style={{ color: c.textFaint }} />
+              <span className="text-[11px] font-mono font-semibold" style={{ color: c.textFaint }}>
+                {nowClock.toLocaleTimeString([], { hour12: false })}
+              </span>
             </div>
 
             {/* Digit selector */}
