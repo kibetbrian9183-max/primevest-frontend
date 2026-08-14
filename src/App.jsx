@@ -1509,6 +1509,23 @@ function TradingDashboard({
                 </div>
               </div>
 
+              {activeTab === "evenodd" && (
+                <div className="absolute top-14 left-0 right-0 z-10 flex items-baseline justify-center pointer-events-none select-none">
+                  <span
+                    className="font-bold tabular-nums tracking-tight"
+                    style={{ fontSize: 28, color: c.text, textShadow: "0 2px 12px rgba(0,0,0,0.6)" }}
+                  >
+                    {currentPrice.toFixed(2).slice(0, -1)}
+                  </span>
+                  <span
+                    className="font-bold tabular-nums tracking-tight"
+                    style={{ fontSize: 44, color: c.amber, textShadow: "0 2px 12px rgba(0,0,0,0.6)" }}
+                  >
+                    {currentPrice.toFixed(2).slice(-1)}
+                  </span>
+                </div>
+              )}
+
               <div className="h-[420px] sm:h-[480px] w-full pt-16 pb-1 px-1 sm:px-2">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={visibleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
