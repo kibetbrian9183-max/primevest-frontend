@@ -140,11 +140,11 @@ async function backendApi(path, options = {}) {
 }
 
 /** Polls a status endpoint until it resolves to success/failed, or times out. */
-async function pollStatus(path, { intervalMs = 2500, timeoutMs = 90000 } = {}) {
+async function pollStatus(path, { intervalMs = 2500, timeoutMs = 90000, terminal = ["success", "failed"] } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const data = await backendApi(path);
-    if (data.status === "success" || data.status === "failed") return data;
+    if (terminal.includes(data.status)) return data;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error("Timed out waiting for confirmation");
@@ -3856,9 +3856,23 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
         amount: data.amountKes,
         usdAmount: amt,
         phone: selectedPhone,
-        status: "pending",
+        status: data.status || "processing",
         time: Date.now(),
       });
+
+      // Withdrawals are sent automatically — wait for SmartPay's real
+      // outcome (completed or rejected) instead of assuming success.
+      const result = await pollStatus(`/api/payments/withdraw/status/${data.reference}`, {
+        terminal: ["completed", "rejected"],
+      });
+
+      if (result.status === "rejected") {
+        onBalanceSet?.(Number((data.balance + amt).toFixed(2)));
+        setApiError("Your withdrawal couldn't be completed and has been refunded to your Real balance.");
+        setStage("failed");
+        return;
+      }
+
       setStage("success");
     } catch (err) {
       setApiError(err.message || "Something went wrong");
@@ -3925,7 +3939,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           >
             <Loader2 size={28} style={{ color: c.amber }} className="animate-spin" />
           </div>
-          <h2 className="text-lg font-bold mb-2">Submitting your request…</h2>
+          <h2 className="text-lg font-bold mb-2">Sending your withdrawal…</h2>
           <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
             ${Number(amount).toFixed(2)} (KES {kesEquivalent.toLocaleString()}) to{" "}
             <span style={{ color: c.text }}>{selectedPhone}</span>
@@ -3946,14 +3960,13 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           >
             <CheckCircle2 size={30} style={{ color: c.green }} />
           </div>
-          <h2 className="text-lg font-bold mb-2">Withdrawal submitted successfully</h2>
+          <h2 className="text-lg font-bold mb-2">Withdrawal completed</h2>
           <p className="text-sm max-w-xs mb-2" style={{ color: c.textDim }}>
-            Your request to withdraw ${Number(amount).toFixed(2)} (converted to{" "}
+            ${Number(amount).toFixed(2)} (converted to{" "}
             <span className="font-semibold" style={{ color: c.text }}>
               KES {kesEquivalent.toLocaleString()}
             </span>
-            ) to {selectedPhone} has been received. Our team will process this manually and disburse the funds
-            shortly.
+            ) has been sent to {selectedPhone}.
           </p>
           <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>
             Reference: {reference}
@@ -4110,7 +4123,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 
           <div className="flex items-center gap-2 justify-center text-xs" style={{ color: c.textFaint }}>
             <ShieldCheck size={13} />
-            Withdrawals are reviewed and sent manually
+            Withdrawals are sent instantly via M-Pesa
           </div>
         </form>
       </div>
@@ -4745,7 +4758,7 @@ function botReplyFor(text) {
   if (t.includes("deposit"))
     return "Deposits go through M-Pesa STK Push — enter your amount, confirm the prompt on your phone, and it reflects in your Real account right away.";
   if (t.includes("withdraw"))
-    return "Withdrawal requests are reviewed and sent manually by our team. You'll see the status update from Pending to Completed in your History once it's processed.";
+    return "M-Pesa withdrawals are sent automatically and usually land within a minute or two. USDT withdrawals are still reviewed manually by our team — you'll see the status update in your History once it's processed.";
   if (t.includes("balance"))
     return "You can check your balance at the top of the Trade screen — tap it to switch between your Demo and Real accounts.";
   if (t.includes("password") || t.includes("2fa") || t.includes("verify"))
