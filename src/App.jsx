@@ -3859,9 +3859,20 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
         status: data.status || "processing",
         time: Date.now(),
       });
-      // Don't block here waiting for SmartPay to confirm — that can take
-      // a few minutes. Show success right away; History reconciles the
-      // real status (Processing -> Completed/Rejected) in the background.
+
+      // Withdrawals are sent automatically — wait for SmartPay's real
+      // outcome (completed or rejected) instead of assuming success.
+      const result = await pollStatus(`/api/payments/withdraw/status/${data.reference}`, {
+        terminal: ["completed", "rejected"],
+      });
+
+      if (result.status === "rejected") {
+        onBalanceSet?.(Number((data.balance + amt).toFixed(2)));
+        setApiError("Your withdrawal couldn't be completed and has been refunded to your Real balance.");
+        setStage("failed");
+        return;
+      }
+
       setStage("success");
     } catch (err) {
       setApiError(err.message || "Something went wrong");
@@ -3893,6 +3904,13 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
   }
 
   if (stage === "failed") {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+        <MoneyHeader title="Withdraw" onBack={onBack} />
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+          <div
+            className="w-16 h-16 rounded-full flex items-center justify-center mb-6"
+            style={{ background: c.redDim }}
           >
             <X size={26} style={{ color: c.red }} />
           </div>
@@ -3942,14 +3960,13 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           >
             <CheckCircle2 size={30} style={{ color: c.green }} />
           </div>
-          <h2 className="text-lg font-bold mb-2">Withdrawal submitted</h2>
+          <h2 className="text-lg font-bold mb-2">Withdrawal completed</h2>
           <p className="text-sm max-w-xs mb-2" style={{ color: c.textDim }}>
             ${Number(amount).toFixed(2)} (converted to{" "}
             <span className="font-semibold" style={{ color: c.text }}>
               KES {kesEquivalent.toLocaleString()}
             </span>
-            ) is on its way to {selectedPhone}. It's sent automatically — check History to see it update to
-            Completed once M-Pesa confirms.
+            ) has been sent to {selectedPhone}.
           </p>
           <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>
             Reference: {reference}
@@ -4331,14 +4348,13 @@ function PaymentRow({ p }) {
   const isDeposit = p.type === "deposit";
   const isCrypto = p.method === "usdt_trc20";
   const pending = p.status === "pending";
-  const processing = p.status === "processing";
   const approved = p.status === "approved";
   const rejected = p.status === "rejected";
   const failed = p.status === "failed";
   const completed = p.status === "completed" || p.status === "success";
 
-  const statusLabel = pending || processing ? "Processing" : approved ? "Approved" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
-  const statusColor = pending || processing || approved ? c.amber : rejected || failed ? c.red : c.green;
+  const statusLabel = pending ? "Pending" : approved ? "Approved" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
+  const statusColor = pending || approved ? c.amber : rejected || failed ? c.red : c.green;
 
   const title = isCrypto
     ? (isDeposit ? "USDT deposit" : "Withdrawal to USDT wallet")
@@ -4355,12 +4371,12 @@ function PaymentRow({ p }) {
     >
       <div
         className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: pending || processing || approved ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
+        style={{ background: pending || approved ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
       >
         {isDeposit ? (
           <ArrowDownRight size={18} style={{ color: c.green }} />
         ) : (
-          <ArrowUpRight size={18} style={{ color: pending || processing || approved ? c.amber : c.red }} />
+          <ArrowUpRight size={18} style={{ color: pending || approved ? c.amber : c.red }} />
         )}
       </div>
       <div className="flex-1 min-w-0">
@@ -4400,26 +4416,6 @@ function HistoryScreen({ trades, payments, onBack, onRefresh }) {
   const [tab, setTab] = useState("trades"); // trades | deposits | withdrawals
   const [filter, setFilter] = useState("all"); // all | won | lost
   const [refreshing, setRefreshing] = useState(false);
-
-  // Withdrawals sent via SmartPay B2C don't arrive via webhook — their
-  // final status only updates when something actually asks SmartPay
-  // again. If the withdraw screen gave up waiting earlier, this is what
-  // eventually resolves "Processing" to "Completed"/"Rejected" instead
-  // of it sitting stuck forever.
-  useEffect(() => {
-    const stuck = payments.filter((p) => p.type === "withdrawal" && p.status === "processing");
-    if (!stuck.length) return;
-    let cancelled = false;
-    (async () => {
-      await Promise.all(
-        stuck.map((p) => backendApi(`/api/payments/withdraw/status/${p.id}`).catch(() => null))
-      );
-      if (!cancelled) onRefresh?.();
-    })();
-    return () => { cancelled = true; };
-    // Only re-run when the set of processing withdrawals actually changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payments.filter((p) => p.type === "withdrawal" && p.status === "processing").map((p) => p.id).join(",")]);
 
   async function handleRefresh() {
     setRefreshing(true);
