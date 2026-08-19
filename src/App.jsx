@@ -4,8 +4,6 @@ import {
   Line,
   AreaChart,
   Area,
-  ComposedChart,
-  Bar,
   ReferenceLine,
   XAxis,
   YAxis,
@@ -75,8 +73,6 @@ import {
   TrendingDown,
   CreditCard,
   Award,
-  LineChart as LineChartIcon,
-  CandlestickChart as CandlestickChartIcon,
 } from "lucide-react";
 
 
@@ -144,11 +140,11 @@ async function backendApi(path, options = {}) {
 }
 
 /** Polls a status endpoint until it resolves to success/failed, or times out. */
-async function pollStatus(path, { intervalMs = 2500, timeoutMs = 90000 } = {}) {
+async function pollStatus(path, { intervalMs = 2500, timeoutMs = 90000, terminal = ["success", "failed"] } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const data = await backendApi(path);
-    if (data.status === "success" || data.status === "failed") return data;
+    if (terminal.includes(data.status)) return data;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error("Timed out waiting for confirmation");
@@ -254,32 +250,6 @@ function CurrentPriceLabel({ viewBox, value, color }) {
       >
         {text}
       </text>
-    </g>
-  );
-}
-
-// Recharts has no built-in candlestick type, so this is the standard
-// workaround: render a <Bar dataKey="highLow"> where highLow=[low, high] —
-// recharts then hands this shape the pixel y/height already scaled to
-// exactly span [low, high] on the y-axis. Open/close just need linear
-// interpolation within that same span to land in the right place.
-function Candle({ x, y, width, height, payload }) {
-  const { open, close, high, low } = payload;
-  if (high === low) return null; // no range yet (first tick of a bucket) — nothing to draw
-  const scaleY = (price) => y + height * ((high - price) / (high - low));
-  const openY = scaleY(open);
-  const closeY = scaleY(close);
-  const bodyTop = Math.min(openY, closeY);
-  const bodyHeight = Math.max(Math.abs(closeY - openY), 1.5); // 1.5px floor so a doji is still visible
-  const bodyWidth = Math.max(width * 0.6, 2);
-  const bodyX = x + (width - bodyWidth) / 2;
-  const wickX = x + width / 2;
-  const isUp = close >= open;
-  const color = isUp ? c.green : c.red;
-  return (
-    <g>
-      <line x1={wickX} y1={y} x2={wickX} y2={y + height} stroke={color} strokeWidth={1.25} />
-      <rect x={bodyX} y={bodyTop} width={bodyWidth} height={bodyHeight} fill={color} rx={1} />
     </g>
   );
 }
@@ -747,7 +717,6 @@ function TradingDashboard({
   const [data, setData] = useState(() => makeInitialSeries(symbol.base, 80));
   const [zoomPoints, setZoomPoints] = useState(20);
   const [historicalView, setHistoricalView] = useState(false);
-  const [chartType, setChartType] = useState("area"); // "area" | "candles"
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [darkTheme, setDarkTheme] = useState(true);
   const [balanceMenuOpen, setBalanceMenuOpen] = useState(false);
@@ -863,25 +832,6 @@ function TradingDashboard({
     () => (historicalView ? data : data.slice(-zoomPoints)),
     [data, zoomPoints, historicalView]
   );
-
-  // Groups the raw 1-tick-per-second feed into fixed-size OHLC buckets for
-  // candlestick view. Every CANDLE_BUCKET ticks becomes one candle: open =
-  // first tick in the bucket, close = last, high/low = the extremes.
-  const CANDLE_BUCKET = 5;
-  const candleData = useMemo(() => {
-    const buckets = [];
-    for (let i = 0; i < visibleData.length; i += CANDLE_BUCKET) {
-      const slice = visibleData.slice(i, i + CANDLE_BUCKET);
-      if (!slice.length) continue;
-      const prices = slice.map((p) => p.price);
-      const open = slice[0].price;
-      const close = slice[slice.length - 1].price;
-      const high = Math.max(...prices);
-      const low = Math.min(...prices);
-      buckets.push({ time: slice[slice.length - 1].time, open, close, high, low, highLow: [low, high] });
-    }
-    return buckets;
-  }, [visibleData]);
   const currentPrice = data[data.length - 1].price;
   const changePct = useMemo(() => {
     const open = openingPriceRef.current;
@@ -890,21 +840,8 @@ function TradingDashboard({
   const isUp = changePct >= 0;
   const trendColor = isUp ? c.green : c.red;
 
-  // Real payout rates, fetched from the backend so admin-configured
-  // per-instrument/per-side overrides (PayoutRate) are actually visible
-  // here BEFORE a trade is placed — not just applied silently server-side
-  // after the fact. Falls back to a sane default while loading/on error
-  // so the UI never shows $0 or breaks if the fetch fails.
-  const [payoutRates, setPayoutRates] = useState({ defaultRate: 1.952, rates: {} });
-  useEffect(() => {
-    backendApi("/api/trades/payout-rates")
-      .then(setPayoutRates)
-      .catch(() => {}); // keep the default on failure — never block trading
-  }, []);
-
-  function currentPayoutRate(forSide) {
-    return payoutRates.rates?.[symbolId]?.[forSide] ?? payoutRates.defaultRate;
-  }
+  const payoutRate = 1.952; // 95.2% return
+  const payout = (stake * payoutRate).toFixed(2);
 
   const quickAmounts = [1, 5, 10, 25, 50, 100];
 
@@ -936,28 +873,17 @@ function TradingDashboard({
     },
   };
   const market = marketConfig[activeTab];
-  // Independent payout per side — this is the actual point of per-side
-  // rates existing (e.g. Match 95%, Differ 5.6%, same instrument). Both
-  // used to share one `payout` value, which silently hid this feature
-  // from the UI even when the backend supported it correctly.
-  const leftPayout = (stake * currentPayoutRate(market.left.key)).toFixed(2);
-  const rightPayout = (stake * currentPayoutRate(market.right.key)).toFixed(2);
-  // Kept for the single "Payout" summary label near the stake input,
-  // shown before a side is chosen — reflects whichever side the user
-  // most recently acted on/hovered, defaulting to the left/primary side.
-  const payout = leftPayout;
 
   async function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt) {
     const marketLabel =
       activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under";
     const sideLabel = side === marketSnapshot.left.key ? marketSnapshot.left.label : marketSnapshot.right.label;
 
-    const { tradeId, balance: newBalance, payout: confirmedPayout } = await backendApi("/api/trades", {
+    const { tradeId, balance: newBalance } = await backendApi("/api/trades", {
       method: "POST",
       body: JSON.stringify({
         accountType,
         symbolLabel: symbol.label,
-        symbolId,
         market: activeTab,
         marketLabel,
         side,
@@ -973,17 +899,13 @@ function TradingDashboard({
       id: tradeId,
       openTime: Date.now(),
       symbolLabel: symbol.label,
-      symbolId,
       market: activeTab,
       marketLabel,
       side,
       sideLabel,
       digit: digitSnapshot,
       stake: stakeAmt,
-      // Use the amount the backend actually recorded/paid for, not a
-      // client-side recompute — this is the one place it truly matters,
-      // since it's what settles the trade.
-      payout: confirmedPayout ?? Number((stakeAmt * currentPayoutRate(side)).toFixed(2)),
+      payout: Number((stakeAmt * payoutRate).toFixed(2)),
       status: "open",
     });
     return tradeId;
@@ -1559,28 +1481,6 @@ function TradingDashboard({
                   >
                     Historical View
                   </button>
-
-                  <div
-                    className="flex items-center gap-0.5 h-8 px-0.5 rounded-2xl flex-shrink-0"
-                    style={{ background: "rgba(16,20,29,0.82)", border: `1px solid ${c.border}` }}
-                  >
-                    <button
-                      onClick={() => setChartType("area")}
-                      aria-label="Line chart"
-                      className="h-7 w-7 rounded-xl flex items-center justify-center transition"
-                      style={{ background: chartType === "area" ? c.amber : "transparent" }}
-                    >
-                      <LineChartIcon size={14} style={{ color: chartType === "area" ? "#181205" : c.textDim }} />
-                    </button>
-                    <button
-                      onClick={() => setChartType("candles")}
-                      aria-label="Candlestick chart"
-                      className="h-7 w-7 rounded-xl flex items-center justify-center transition"
-                      style={{ background: chartType === "candles" ? c.amber : "transparent" }}
-                    >
-                      <CandlestickChartIcon size={14} style={{ color: chartType === "candles" ? "#181205" : c.textDim }} />
-                    </button>
-                  </div>
                 </div>
 
                 <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -1628,83 +1528,50 @@ function TradingDashboard({
 
               <div className="h-[420px] sm:h-[480px] w-full pt-16 pb-1 px-1 sm:px-2">
                 <ResponsiveContainer width="100%" height="100%">
-                  {chartType === "candles" ? (
-                    <ComposedChart data={candleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                      <CartesianGrid stroke="rgba(255,255,255,0.05)" horizontal vertical />
-                      <XAxis
-                        dataKey="time"
-                        tickFormatter={(t) =>
-                          new Date(t).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })
-                        }
-                        tick={{ fill: c.textFaint, fontSize: 10 }}
-                        axisLine={{ stroke: c.border }}
-                        tickLine={false}
-                        minTickGap={30}
-                      />
-                      <YAxis
-                        orientation="right"
-                        domain={["auto", "auto"]}
-                        tick={{ fill: c.textFaint, fontSize: 10 }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={54}
-                        tickFormatter={(v) => v.toFixed(2)}
-                      />
-                      <ReferenceLine
-                        y={currentPrice}
-                        stroke={c.textFaint}
-                        strokeDasharray="4 4"
-                        strokeOpacity={0.6}
-                        label={<CurrentPriceLabel value={currentPrice} color={trendColor} />}
-                      />
-                      <Bar dataKey="highLow" shape={<Candle />} isAnimationActive={false} />
-                    </ComposedChart>
-                  ) : (
-                    <AreaChart data={visibleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                      <defs>
-                        <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#E9ECF2" stopOpacity={0.16} />
-                          <stop offset="100%" stopColor="#E9ECF2" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid stroke="rgba(255,255,255,0.05)" horizontal vertical />
-                      <XAxis
-                        dataKey="time"
-                        tickFormatter={(t) =>
-                          new Date(t).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })
-                        }
-                        tick={{ fill: c.textFaint, fontSize: 10 }}
-                        axisLine={{ stroke: c.border }}
-                        tickLine={false}
-                        minTickGap={30}
-                      />
-                      <YAxis
-                        orientation="right"
-                        domain={["auto", "auto"]}
-                        tick={{ fill: c.textFaint, fontSize: 10 }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={54}
-                        tickFormatter={(v) => v.toFixed(2)}
-                      />
-                      <ReferenceLine
-                        y={currentPrice}
-                        stroke={c.textFaint}
-                        strokeDasharray="4 4"
-                        strokeOpacity={0.6}
-                        label={<CurrentPriceLabel value={currentPrice} color={trendColor} />}
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="price"
-                        stroke="#E9ECF2"
-                        strokeWidth={1.75}
-                        fill="url(#priceFill)"
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    </AreaChart>
-                  )}
+                  <AreaChart data={visibleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                    <defs>
+                      <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#E9ECF2" stopOpacity={0.16} />
+                        <stop offset="100%" stopColor="#E9ECF2" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" horizontal vertical />
+                    <XAxis
+                      dataKey="time"
+                      tickFormatter={(t) =>
+                        new Date(t).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })
+                      }
+                      tick={{ fill: c.textFaint, fontSize: 10 }}
+                      axisLine={{ stroke: c.border }}
+                      tickLine={false}
+                      minTickGap={30}
+                    />
+                    <YAxis
+                      orientation="right"
+                      domain={["auto", "auto"]}
+                      tick={{ fill: c.textFaint, fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={54}
+                      tickFormatter={(v) => v.toFixed(2)}
+                    />
+                    <ReferenceLine
+                      y={currentPrice}
+                      stroke={c.textFaint}
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.6}
+                      label={<CurrentPriceLabel value={currentPrice} color={trendColor} />}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="price"
+                      stroke="#E9ECF2"
+                      strokeWidth={1.75}
+                      fill="url(#priceFill)"
+                      dot={false}
+                      isAnimationActive={false}
+                    />
+                  </AreaChart>
                 </ResponsiveContainer>
               </div>
             </div>
@@ -1984,9 +1851,7 @@ function TradingDashboard({
                     <span className="text-lg font-extrabold text-white">
                       {runningSide === market.left.key ? market.left.label : market.right.label}
                     </span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">
-                      ${runningSide === market.left.key ? leftPayout : rightPayout}
-                    </span>
+                    <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
                   </div>
                   <button
                     onClick={requestStopRun}
@@ -2021,7 +1886,7 @@ function TradingDashboard({
                   >
                     <span className="text-lg font-extrabold text-white">{market.left.label}</span>
                     <span className="text-xs font-semibold text-white/85 mt-1">{market.left.hint}</span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">${leftPayout}</span>
+                    <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
                   </button>
                   <button
                     onClick={() => handleTradeButtonClick(market.right.key)}
@@ -2038,7 +1903,7 @@ function TradingDashboard({
                   >
                     <span className="text-lg font-extrabold text-white">{market.right.label}</span>
                     <span className="text-xs font-semibold text-white/85 mt-1">{market.right.hint}</span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">${rightPayout}</span>
+                    <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
                   </button>
                 </div>
               )}
@@ -3991,9 +3856,12 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
         amount: data.amountKes,
         usdAmount: amt,
         phone: selectedPhone,
-        status: "pending",
+        status: data.status || "processing",
         time: Date.now(),
       });
+      // Don't block here waiting for SmartPay to confirm — that can take
+      // a few minutes. Show success right away; History reconciles the
+      // real status (Processing -> Completed/Rejected) in the background.
       setStage("success");
     } catch (err) {
       setApiError(err.message || "Something went wrong");
@@ -4060,7 +3928,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           >
             <Loader2 size={28} style={{ color: c.amber }} className="animate-spin" />
           </div>
-          <h2 className="text-lg font-bold mb-2">Submitting your request…</h2>
+          <h2 className="text-lg font-bold mb-2">Sending your withdrawal…</h2>
           <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
             ${Number(amount).toFixed(2)} (KES {kesEquivalent.toLocaleString()}) to{" "}
             <span style={{ color: c.text }}>{selectedPhone}</span>
@@ -4081,14 +3949,14 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           >
             <CheckCircle2 size={30} style={{ color: c.green }} />
           </div>
-          <h2 className="text-lg font-bold mb-2">Withdrawal submitted successfully</h2>
+          <h2 className="text-lg font-bold mb-2">Withdrawal submitted</h2>
           <p className="text-sm max-w-xs mb-2" style={{ color: c.textDim }}>
-            Your request to withdraw ${Number(amount).toFixed(2)} (converted to{" "}
+            ${Number(amount).toFixed(2)} (converted to{" "}
             <span className="font-semibold" style={{ color: c.text }}>
               KES {kesEquivalent.toLocaleString()}
             </span>
-            ) to {selectedPhone} has been received. Our team will process this manually and disburse the funds
-            shortly.
+            ) is on its way to {selectedPhone}. It's sent automatically — check History to see it update to
+            Completed once M-Pesa confirms.
           </p>
           <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>
             Reference: {reference}
@@ -4245,7 +4113,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 
           <div className="flex items-center gap-2 justify-center text-xs" style={{ color: c.textFaint }}>
             <ShieldCheck size={13} />
-            Withdrawals are reviewed and sent manually
+            Withdrawals are sent instantly via M-Pesa
           </div>
         </form>
       </div>
@@ -4470,13 +4338,14 @@ function PaymentRow({ p }) {
   const isDeposit = p.type === "deposit";
   const isCrypto = p.method === "usdt_trc20";
   const pending = p.status === "pending";
+  const processing = p.status === "processing";
   const approved = p.status === "approved";
   const rejected = p.status === "rejected";
   const failed = p.status === "failed";
   const completed = p.status === "completed" || p.status === "success";
 
-  const statusLabel = pending ? "Pending" : approved ? "Approved" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
-  const statusColor = pending || approved ? c.amber : rejected || failed ? c.red : c.green;
+  const statusLabel = pending || processing ? "Processing" : approved ? "Approved" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
+  const statusColor = pending || processing || approved ? c.amber : rejected || failed ? c.red : c.green;
 
   const title = isCrypto
     ? (isDeposit ? "USDT deposit" : "Withdrawal to USDT wallet")
@@ -4493,12 +4362,12 @@ function PaymentRow({ p }) {
     >
       <div
         className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: pending || approved ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
+        style={{ background: pending || processing || approved ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
       >
         {isDeposit ? (
           <ArrowDownRight size={18} style={{ color: c.green }} />
         ) : (
-          <ArrowUpRight size={18} style={{ color: pending || approved ? c.amber : c.red }} />
+          <ArrowUpRight size={18} style={{ color: pending || processing || approved ? c.amber : c.red }} />
         )}
       </div>
       <div className="flex-1 min-w-0">
@@ -4538,6 +4407,26 @@ function HistoryScreen({ trades, payments, onBack, onRefresh }) {
   const [tab, setTab] = useState("trades"); // trades | deposits | withdrawals
   const [filter, setFilter] = useState("all"); // all | won | lost
   const [refreshing, setRefreshing] = useState(false);
+
+  // Withdrawals sent via SmartPay B2C don't arrive via webhook — their
+  // final status only updates when something actually asks SmartPay
+  // again. If the withdraw screen gave up waiting earlier, this is what
+  // eventually resolves "Processing" to "Completed"/"Rejected" instead
+  // of it sitting stuck forever.
+  useEffect(() => {
+    const stuck = payments.filter((p) => p.type === "withdrawal" && p.status === "processing");
+    if (!stuck.length) return;
+    let cancelled = false;
+    (async () => {
+      await Promise.all(
+        stuck.map((p) => backendApi(`/api/payments/withdraw/status/${p.id}`).catch(() => null))
+      );
+      if (!cancelled) onRefresh?.();
+    })();
+    return () => { cancelled = true; };
+    // Only re-run when the set of processing withdrawals actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payments.filter((p) => p.type === "withdrawal" && p.status === "processing").map((p) => p.id).join(",")]);
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -4880,7 +4769,7 @@ function botReplyFor(text) {
   if (t.includes("deposit"))
     return "Deposits go through M-Pesa STK Push — enter your amount, confirm the prompt on your phone, and it reflects in your Real account right away.";
   if (t.includes("withdraw"))
-    return "Withdrawal requests are reviewed and sent manually by our team. You'll see the status update from Pending to Completed in your History once it's processed.";
+    return "M-Pesa withdrawals are sent automatically and usually land within a minute or two. USDT withdrawals are still reviewed manually by our team — you'll see the status update in your History once it's processed.";
   if (t.includes("balance"))
     return "You can check your balance at the top of the Trade screen — tap it to switch between your Demo and Real accounts.";
   if (t.includes("password") || t.includes("2fa") || t.includes("verify"))
