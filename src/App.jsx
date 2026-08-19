@@ -4,6 +4,9 @@ import {
   Line,
   AreaChart,
   Area,
+  ComposedChart,
+  Bar,
+  Cell,
   ReferenceLine,
   XAxis,
   YAxis,
@@ -73,6 +76,8 @@ import {
   TrendingDown,
   CreditCard,
   Award,
+  LineChart as LineChartIcon,
+  CandlestickChart as CandlestickChartIcon,
 } from "lucide-react";
 
 
@@ -140,11 +145,11 @@ async function backendApi(path, options = {}) {
 }
 
 /** Polls a status endpoint until it resolves to success/failed, or times out. */
-async function pollStatus(path, { intervalMs = 2500, timeoutMs = 90000, terminal = ["success", "failed"] } = {}) {
+async function pollStatus(path, { intervalMs = 2500, timeoutMs = 90000 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const data = await backendApi(path);
-    if (terminal.includes(data.status)) return data;
+    if (data.status === "success" || data.status === "failed") return data;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error("Timed out waiting for confirmation");
@@ -251,6 +256,382 @@ function CurrentPriceLabel({ viewBox, value, color }) {
         {text}
       </text>
     </g>
+  );
+}
+
+// Recharts has no built-in candlestick type, so this is the standard
+// workaround: render a <Bar dataKey="highLow"> where highLow=[low, high] —
+// recharts then hands this shape the pixel y/height already scaled to
+// exactly span [low, high] on the y-axis. Open/close just need linear
+// interpolation within that same span to land in the right place.
+function Candle({ x, y, width, height, payload }) {
+  const { open, close, high, low } = payload;
+  const bodyWidth = Math.max(width * 0.6, 2);
+  const bodyX = x + (width - bodyWidth) / 2;
+  const wickX = x + width / 2;
+  const isUp = close >= open;
+  const color = close === open ? c.textFaint : isUp ? c.green : c.red;
+
+  if (high === low) {
+    // Doji — this tick's price rounded to exactly the same value as the
+    // previous one, so there's no range to draw a body/wick from.
+    // recharts collapses y/height to a single point in this case; a flat
+    // dash reads correctly instead of dividing by a zero range.
+    return <line x1={x} y1={y} x2={x + width} y2={y} stroke={color} strokeWidth={1.5} />;
+  }
+
+  const scaleY = (price) => y + height * ((high - price) / (high - low));
+  const openY = scaleY(open);
+  const closeY = scaleY(close);
+  const bodyTop = Math.min(openY, closeY);
+  const bodyHeight = Math.max(Math.abs(closeY - openY), 1.5); // 1.5px floor so a thin body is still visible
+  return (
+    <g>
+      <line x1={wickX} y1={y} x2={wickX} y2={y + height} stroke={color} strokeWidth={1.25} />
+      <rect x={bodyX} y={bodyTop} width={bodyWidth} height={bodyHeight} fill={color} rx={1} />
+    </g>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TECHNICAL INDICATORS — real calculations, not placeholders. Each compute
+// function takes an array of closing prices (oldest first) and returns
+// either a flat array of values aligned index-for-index with the input
+// (single-line indicators), or an object of such arrays (multi-line ones
+// like Bollinger Bands or MACD). Indices before an indicator has enough
+// data to compute yet are `null`, which recharts simply skips drawing.
+// ---------------------------------------------------------------------------
+
+function computeSMA(closes, period) {
+  return closes.map((_, i) => {
+    if (i < period - 1) return null;
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += closes[j];
+    return sum / period;
+  });
+}
+
+function computeEMA(closes, period) {
+  const k = 2 / (period + 1);
+  const out = new Array(closes.length).fill(null);
+  let prev = null;
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) continue;
+    if (prev === null) {
+      // Seed the EMA with a simple average of the first `period` closes.
+      let sum = 0;
+      for (let j = i - period + 1; j <= i; j++) sum += closes[j];
+      prev = sum / period;
+    } else {
+      prev = closes[i] * k + prev * (1 - k);
+    }
+    out[i] = prev;
+  }
+  return out;
+}
+
+function computeBollinger(closes, period, stdDevMult) {
+  const mid = computeSMA(closes, period);
+  const upper = new Array(closes.length).fill(null);
+  const lower = new Array(closes.length).fill(null);
+  for (let i = 0; i < closes.length; i++) {
+    if (mid[i] === null) continue;
+    let sumSq = 0;
+    for (let j = i - period + 1; j <= i; j++) sumSq += (closes[j] - mid[i]) ** 2;
+    const stdDev = Math.sqrt(sumSq / period);
+    upper[i] = mid[i] + stdDev * stdDevMult;
+    lower[i] = mid[i] - stdDev * stdDevMult;
+  }
+  return { mid, upper, lower };
+}
+
+function computeRSI(closes, period) {
+  const out = new Array(closes.length).fill(null);
+  if (closes.length < period + 1) return out;
+  let gainSum = 0;
+  let lossSum = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) gainSum += change;
+    else lossSum -= change;
+  }
+  let avgGain = gainSum / period;
+  let avgLoss = lossSum / period;
+  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+  return out;
+}
+
+function computeMACD(closes, fast, slow, signal) {
+  const emaFast = computeEMA(closes, fast);
+  const emaSlow = computeEMA(closes, slow);
+  const macdLine = closes.map((_, i) => (emaFast[i] !== null && emaSlow[i] !== null ? emaFast[i] - emaSlow[i] : null));
+  // Signal line is an EMA of the MACD line itself — computed only over the
+  // stretch where macdLine is non-null, then mapped back to full length.
+  const macdValues = macdLine.filter((v) => v !== null);
+  const signalRaw = computeEMA(macdValues, signal);
+  const firstMacdIdx = macdLine.findIndex((v) => v !== null);
+  const signalLine = new Array(closes.length).fill(null);
+  signalRaw.forEach((v, i) => {
+    if (v !== null) signalLine[firstMacdIdx + i] = v;
+  });
+  const histogram = closes.map((_, i) =>
+    macdLine[i] !== null && signalLine[i] !== null ? macdLine[i] - signalLine[i] : null
+  );
+  return { macdLine, signalLine, histogram };
+}
+
+// Palette cycled through as a user adds more overlay indicators, so each
+// gets a visually distinct line color on the chart.
+const INDICATOR_COLORS = ["#38BDF8", "#A78BFA", "#FB923C", "#22D3EE", "#F472B6"];
+
+// The catalog shown in the "All" tab of the Indicators modal. `overlay:
+// true` means it draws on the price chart itself (EMA/SMA/Bollinger);
+// `overlay: false` means it gets its own panel below the chart (RSI/MACD),
+// matching how PocketOption separates trend indicators from oscillators.
+const INDICATOR_CATALOG = [
+  { type: "ema", label: "Moving Average EMA", overlay: true, defaultParams: { period: 20 } },
+  { type: "sma", label: "Moving Average SMA", overlay: true, defaultParams: { period: 20 } },
+  { type: "bollinger", label: "Bollinger Bands", overlay: true, defaultParams: { period: 20, stdDev: 2 } },
+  { type: "rsi", label: "RSI", overlay: false, defaultParams: { period: 14 } },
+  { type: "macd", label: "MACD", overlay: false, defaultParams: { fast: 12, slow: 26, signal: 9 } },
+];
+
+function indicatorDisplayLabel(ind) {
+  const def = INDICATOR_CATALOG.find((d) => d.type === ind.type);
+  if (ind.type === "bollinger") return `${def.label} (${ind.params.period}, ${ind.params.stdDev})`;
+  if (ind.type === "macd") return `${def.label} (${ind.params.fast}, ${ind.params.slow}, ${ind.params.signal})`;
+  return `${def.label} ${ind.params.period}`;
+}
+
+// The small chart panel below the main price chart for oscillator-type
+// indicators (RSI, MACD) — these have their own value range (0-100 for
+// RSI) that doesn't share an axis with price, so they can't be overlaid
+// directly on the chart the way EMA/SMA/Bollinger are.
+function OscillatorPanel({ indicator, data, color, onRemove, onEdit }) {
+  return (
+    <div className="border-t px-1 sm:px-2 pt-2 pb-1" style={{ borderColor: c.border }}>
+      <div className="flex items-center justify-between px-1 mb-1">
+        <span className="text-[11px] font-bold" style={{ color: c.textDim }}>
+          {indicatorDisplayLabel(indicator)}
+        </span>
+        <div className="flex items-center gap-2">
+          <button onClick={onEdit} aria-label="Settings">
+            <Settings size={12} style={{ color: c.textFaint }} />
+          </button>
+          <button onClick={onRemove} aria-label="Remove">
+            <X size={13} style={{ color: c.textFaint }} />
+          </button>
+        </div>
+      </div>
+      <div className="h-[90px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          {indicator.type === "rsi" ? (
+            <LineChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+              <YAxis domain={[0, 100]} hide />
+              <XAxis dataKey="time" hide />
+              <ReferenceLine y={70} stroke={c.textFaint} strokeDasharray="3 3" strokeOpacity={0.5} />
+              <ReferenceLine y={30} stroke={c.textFaint} strokeDasharray="3 3" strokeOpacity={0.5} />
+              <Line type="monotone" dataKey={indicator.id} stroke={color} strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls />
+            </LineChart>
+          ) : (
+            <ComposedChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+              <YAxis domain={["auto", "auto"]} hide />
+              <XAxis dataKey="time" hide />
+              <ReferenceLine y={0} stroke={c.textFaint} strokeOpacity={0.4} />
+              <Bar dataKey={`${indicator.id}_hist`} isAnimationActive={false}>
+                {data.map((row, i) => (
+                  <Cell key={i} fill={(row[`${indicator.id}_hist`] ?? 0) >= 0 ? c.green : c.red} />
+                ))}
+              </Bar>
+              <Line type="monotone" dataKey={`${indicator.id}_macd`} stroke={color} strokeWidth={1.25} dot={false} isAnimationActive={false} connectNulls />
+              <Line type="monotone" dataKey={`${indicator.id}_signal`} stroke={c.amber} strokeWidth={1.25} dot={false} isAnimationActive={false} connectNulls />
+            </ComposedChart>
+          )}
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// Add/manage indicators — mirrors the Current/All tab layout from the
+// reference screenshots. "Current" lists what's actually applied with
+// settings + remove controls; "All" is the catalog to add from. Only
+// types with a real compute() implementation appear here — no dead
+// buttons for indicators that don't actually calculate anything.
+function IndicatorsModal({
+  open,
+  onClose,
+  indicators,
+  tab,
+  setTab,
+  editingId,
+  setEditingId,
+  onAdd,
+  onRemove,
+  onUpdateParams,
+  onClearAll,
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.6)" }}
+      onClick={onClose}
+    >
+      <div
+        className="w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] flex flex-col"
+        style={{ background: c.elevated }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 pt-5 pb-3">
+          <h3 className="text-base font-bold" style={{ color: c.text }}>Indicators</h3>
+          <button onClick={onClose}>
+            <X size={20} style={{ color: c.textDim }} />
+          </button>
+        </div>
+
+        <div className="flex border-b" style={{ borderColor: c.border }}>
+          <button
+            onClick={() => setTab("current")}
+            className="flex-1 py-3 text-sm font-bold"
+            style={{
+              color: tab === "current" ? c.text : c.textDim,
+              borderBottom: tab === "current" ? `2px solid ${c.amber}` : "2px solid transparent",
+            }}
+          >
+            Current ({indicators.length})
+          </button>
+          <button
+            onClick={() => setTab("all")}
+            className="flex-1 py-3 text-sm font-bold"
+            style={{
+              color: tab === "all" ? c.text : c.textDim,
+              borderBottom: tab === "all" ? `2px solid ${c.amber}` : "2px solid transparent",
+            }}
+          >
+            All
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-3">
+          {tab === "current" &&
+            (indicators.length === 0 ? (
+              <p className="text-sm text-center py-10" style={{ color: c.textFaint }}>
+                No indicators added yet. Switch to "All" to add one.
+              </p>
+            ) : (
+              indicators.map((ind) => (
+                <div key={ind.id} className="mb-1">
+                  <div
+                    className="flex items-center justify-between py-3 px-3 rounded-2xl"
+                    style={{ background: c.surfaceAlt }}
+                  >
+                    <span className="text-sm font-semibold" style={{ color: c.text }}>
+                      {indicatorDisplayLabel(ind)}
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => setEditingId(editingId === ind.id ? null : ind.id)}>
+                        <Settings size={16} style={{ color: editingId === ind.id ? c.amber : c.textDim }} />
+                      </button>
+                      <button onClick={() => onRemove(ind.id)}>
+                        <X size={16} style={{ color: c.textDim }} />
+                      </button>
+                    </div>
+                  </div>
+                  {editingId === ind.id && (
+                    <IndicatorParamEditor indicator={ind} onChange={(params) => onUpdateParams(ind.id, params)} />
+                  )}
+                </div>
+              ))
+            ))}
+
+          {tab === "all" &&
+            INDICATOR_CATALOG.map((def) => {
+              const alreadyAdded = indicators.some((i) => i.type === def.type);
+              return (
+                <button
+                  key={def.type}
+                  onClick={() => onAdd(def.type)}
+                  className="w-full flex items-center gap-3 py-3 px-1 text-left"
+                >
+                  <Star
+                    size={16}
+                    style={{ color: alreadyAdded ? c.amber : c.textFaint }}
+                    fill={alreadyAdded ? c.amber : "none"}
+                  />
+                  <span className="text-sm font-semibold" style={{ color: c.text }}>{def.label}</span>
+                </button>
+              );
+            })}
+        </div>
+
+        {tab === "current" && indicators.length > 0 && (
+          <div className="px-5 py-4 border-t" style={{ borderColor: c.border }}>
+            <button
+              onClick={onClearAll}
+              className="w-full text-center text-sm font-bold py-2"
+              style={{ color: c.red }}
+            >
+              Delete all ({indicators.length})
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Inline period/param editor shown under a Current-tab row when its gear
+// icon is tapped. Kept intentionally simple — number inputs only, no
+// separate confirm modal, since these are single small values.
+function IndicatorParamEditor({ indicator, onChange }) {
+  const params = indicator.params;
+  function setParam(key, value) {
+    onChange({ ...params, [key]: Number(value) });
+  }
+  const fields =
+    indicator.type === "bollinger"
+      ? [
+          { key: "period", label: "Period", min: 2, max: 100 },
+          { key: "stdDev", label: "Std Dev", min: 0.5, max: 5, step: 0.5 },
+        ]
+      : indicator.type === "macd"
+      ? [
+          { key: "fast", label: "Fast", min: 2, max: 50 },
+          { key: "slow", label: "Slow", min: 2, max: 100 },
+          { key: "signal", label: "Signal", min: 2, max: 50 },
+        ]
+      : [{ key: "period", label: "Period", min: 2, max: 200 }];
+
+  return (
+    <div className="flex gap-3 px-3 py-3 rounded-2xl mt-1" style={{ background: c.surface }}>
+      {fields.map((f) => (
+        <label key={f.key} className="flex-1">
+          <span className="text-[10px] font-bold uppercase tracking-wide" style={{ color: c.textFaint }}>
+            {f.label}
+          </span>
+          <input
+            type="number"
+            value={params[f.key]}
+            min={f.min}
+            max={f.max}
+            step={f.step || 1}
+            onChange={(e) => setParam(f.key, e.target.value)}
+            className="w-full mt-1 h-9 px-2 rounded-xl text-sm font-mono font-bold outline-none"
+            style={{ background: c.surfaceAlt, color: c.text, border: `1px solid ${c.border}` }}
+          />
+        </label>
+      ))}
+    </div>
   );
 }
 
@@ -717,6 +1098,31 @@ function TradingDashboard({
   const [data, setData] = useState(() => makeInitialSeries(symbol.base, 80));
   const [zoomPoints, setZoomPoints] = useState(20);
   const [historicalView, setHistoricalView] = useState(false);
+  const [chartType, setChartType] = useState("area"); // "area" | "candles"
+  const [indicators, setIndicators] = useState([]); // [{ id, type, params }]
+  const [indicatorsModalOpen, setIndicatorsModalOpen] = useState(false);
+  const [indicatorsTab, setIndicatorsTab] = useState("current"); // "current" | "all"
+  const [editingIndicatorId, setEditingIndicatorId] = useState(null);
+
+  function addIndicator(type) {
+    const def = INDICATOR_CATALOG.find((d) => d.type === type);
+    if (!def) return;
+    const id = `${type}_${Date.now()}`;
+    setIndicators((prev) => [...prev, { id, type, params: { ...def.defaultParams } }]);
+    setEditingIndicatorId(id);
+    setIndicatorsTab("current");
+  }
+  function removeIndicator(id) {
+    setIndicators((prev) => prev.filter((i) => i.id !== id));
+    if (editingIndicatorId === id) setEditingIndicatorId(null);
+  }
+  function updateIndicatorParams(id, params) {
+    setIndicators((prev) => prev.map((i) => (i.id === id ? { ...i, params } : i)));
+  }
+  function clearAllIndicators() {
+    setIndicators([]);
+    setEditingIndicatorId(null);
+  }
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [darkTheme, setDarkTheme] = useState(true);
   const [balanceMenuOpen, setBalanceMenuOpen] = useState(false);
@@ -832,6 +1238,82 @@ function TradingDashboard({
     () => (historicalView ? data : data.slice(-zoomPoints)),
     [data, zoomPoints, historicalView]
   );
+
+  // One candle per tick (the feed already ticks every 1s — see the
+  // setInterval above), matching how a real 1-second chart on
+  // TradingView forms: a brand new candle every second, not a batch
+  // every few seconds. Each candle's open is the previous tick's price
+  // and its close is the current tick's price, so the sequence of
+  // candles traces the same path the line/area view shows — just as
+  // discrete OHLC bars instead of one continuous line.
+  const candleData = useMemo(() => {
+    const candles = [];
+    for (let i = 1; i < visibleData.length; i++) {
+      const open = visibleData[i - 1].price;
+      const close = visibleData[i].price;
+      const high = Math.max(open, close);
+      const low = Math.min(open, close);
+      candles.push({ time: visibleData[i].time, open, close, high, low, highLow: [low, high] });
+    }
+    return candles;
+  }, [visibleData]);
+
+  // Overlay indicators (EMA/SMA/Bollinger) computed against whichever
+  // price series the active chart type is actually displaying, then
+  // merged onto that same array so they can be drawn as extra <Line>
+  // elements sharing the chart's existing x-axis — no separate chart
+  // needed for these, matching how they render directly on price on
+  // every real trading platform.
+  const overlayIndicators = indicators.filter((i) => INDICATOR_CATALOG.find((d) => d.type === i.type)?.overlay);
+  const oscillatorIndicators = indicators.filter((i) => !INDICATOR_CATALOG.find((d) => d.type === i.type)?.overlay);
+
+  const chartDataWithOverlays = useMemo(() => {
+    const base = chartType === "candles" ? candleData : visibleData;
+    if (!overlayIndicators.length) return base;
+    const closeAccessor = chartType === "candles" ? (d) => d.close : (d) => d.price;
+    const closes = base.map(closeAccessor);
+    const seriesById = {};
+    overlayIndicators.forEach((ind) => {
+      if (ind.type === "ema") seriesById[ind.id] = { [ind.id]: computeEMA(closes, ind.params.period) };
+      else if (ind.type === "sma") seriesById[ind.id] = { [ind.id]: computeSMA(closes, ind.params.period) };
+      else if (ind.type === "bollinger") {
+        const { mid, upper, lower } = computeBollinger(closes, ind.params.period, ind.params.stdDev);
+        seriesById[ind.id] = { [`${ind.id}_mid`]: mid, [`${ind.id}_upper`]: upper, [`${ind.id}_lower`]: lower };
+      }
+    });
+    return base.map((row, i) => {
+      const extra = {};
+      Object.values(seriesById).forEach((keyed) => {
+        Object.entries(keyed).forEach(([key, arr]) => {
+          extra[key] = arr[i];
+        });
+      });
+      return { ...row, ...extra };
+    });
+  }, [chartType, candleData, visibleData, overlayIndicators]);
+
+  // Oscillator panels (RSI/MACD) always compute off the raw tick feed,
+  // regardless of chart type — they're about momentum over time, not
+  // tied to candle bucketing.
+  const oscillatorData = useMemo(() => {
+    if (!oscillatorIndicators.length) return [];
+    const closes = visibleData.map((d) => d.price);
+    return visibleData.map((row, i) => {
+      const extra = { time: row.time };
+      oscillatorIndicators.forEach((ind) => {
+        if (ind.type === "rsi") {
+          extra[`${ind.id}`] = computeRSI(closes, ind.params.period)[i];
+        } else if (ind.type === "macd") {
+          const { macdLine, signalLine, histogram } = computeMACD(closes, ind.params.fast, ind.params.slow, ind.params.signal);
+          extra[`${ind.id}_macd`] = macdLine[i];
+          extra[`${ind.id}_signal`] = signalLine[i];
+          extra[`${ind.id}_hist`] = histogram[i];
+        }
+      });
+      return extra;
+    });
+  }, [visibleData, oscillatorIndicators]);
+
   const currentPrice = data[data.length - 1].price;
   const changePct = useMemo(() => {
     const open = openingPriceRef.current;
@@ -840,8 +1322,31 @@ function TradingDashboard({
   const isUp = changePct >= 0;
   const trendColor = isUp ? c.green : c.red;
 
-  const payoutRate = 1.952; // 95.2% return
-  const payout = (stake * payoutRate).toFixed(2);
+  // Real payout rates, fetched from the backend so admin-configured
+  // per-instrument/per-side overrides (PayoutRate) are actually visible
+  // here BEFORE a trade is placed — not just applied silently server-side
+  // after the fact. Falls back to the same odds-based side defaults the
+  // backend uses (see DEFAULT_SIDE_RATES in routes/trades.js) while
+  // loading/on error, so Match and Differ never look identical here even
+  // before the fetch resolves.
+  const [payoutRates, setPayoutRates] = useState({
+    defaultRate: 1.952,
+    sideDefaults: { matches: 9.5, differs: 1.056, even: 1.95, odd: 1.95 },
+    rates: {},
+  });
+  useEffect(() => {
+    backendApi("/api/trades/payout-rates")
+      .then(setPayoutRates)
+      .catch(() => {}); // keep the default on failure — never block trading
+  }, []);
+
+  function currentPayoutRate(forSide) {
+    return (
+      payoutRates.rates?.[symbolId]?.[forSide] ??
+      payoutRates.sideDefaults?.[forSide] ??
+      payoutRates.defaultRate
+    );
+  }
 
   const quickAmounts = [1, 5, 10, 25, 50, 100];
 
@@ -873,17 +1378,28 @@ function TradingDashboard({
     },
   };
   const market = marketConfig[activeTab];
+  // Independent payout per side — this is the actual point of per-side
+  // rates existing (e.g. Match 95%, Differ 5.6%, same instrument). Both
+  // used to share one `payout` value, which silently hid this feature
+  // from the UI even when the backend supported it correctly.
+  const leftPayout = (stake * currentPayoutRate(market.left.key)).toFixed(2);
+  const rightPayout = (stake * currentPayoutRate(market.right.key)).toFixed(2);
+  // Kept for the single "Payout" summary label near the stake input,
+  // shown before a side is chosen — reflects whichever side the user
+  // most recently acted on/hovered, defaulting to the left/primary side.
+  const payout = leftPayout;
 
   async function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt) {
     const marketLabel =
       activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under";
     const sideLabel = side === marketSnapshot.left.key ? marketSnapshot.left.label : marketSnapshot.right.label;
 
-    const { tradeId, balance: newBalance } = await backendApi("/api/trades", {
+    const { tradeId, balance: newBalance, payout: confirmedPayout } = await backendApi("/api/trades", {
       method: "POST",
       body: JSON.stringify({
         accountType,
         symbolLabel: symbol.label,
+        symbolId,
         market: activeTab,
         marketLabel,
         side,
@@ -899,13 +1415,17 @@ function TradingDashboard({
       id: tradeId,
       openTime: Date.now(),
       symbolLabel: symbol.label,
+      symbolId,
       market: activeTab,
       marketLabel,
       side,
       sideLabel,
       digit: digitSnapshot,
       stake: stakeAmt,
-      payout: Number((stakeAmt * payoutRate).toFixed(2)),
+      // Use the amount the backend actually recorded/paid for, not a
+      // client-side recompute — this is the one place it truly matters,
+      // since it's what settles the trade.
+      payout: confirmedPayout ?? Number((stakeAmt * currentPayoutRate(side)).toFixed(2)),
       status: "open",
     });
     return tradeId;
@@ -1481,6 +2001,40 @@ function TradingDashboard({
                   >
                     Historical View
                   </button>
+
+                  <div
+                    className="flex items-center gap-0.5 h-8 px-0.5 rounded-2xl flex-shrink-0"
+                    style={{ background: "rgba(16,20,29,0.82)", border: `1px solid ${c.border}` }}
+                  >
+                    <button
+                      onClick={() => setChartType("area")}
+                      aria-label="Line chart"
+                      className="h-7 w-7 rounded-xl flex items-center justify-center transition"
+                      style={{ background: chartType === "area" ? c.amber : "transparent" }}
+                    >
+                      <LineChartIcon size={14} style={{ color: chartType === "area" ? "#181205" : c.textDim }} />
+                    </button>
+                    <button
+                      onClick={() => setChartType("candles")}
+                      aria-label="Candlestick chart"
+                      className="h-7 w-7 rounded-xl flex items-center justify-center transition"
+                      style={{ background: chartType === "candles" ? c.amber : "transparent" }}
+                    >
+                      <CandlestickChartIcon size={14} style={{ color: chartType === "candles" ? "#181205" : c.textDim }} />
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={() => setIndicatorsModalOpen(true)}
+                    aria-label="Indicators"
+                    className="h-8 w-8 rounded-2xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: indicators.length ? c.amberDim : "rgba(16,20,29,0.82)",
+                      border: `1px solid ${indicators.length ? c.amber : c.border}`,
+                    }}
+                  >
+                    <Layers size={14} style={{ color: indicators.length ? c.amber : c.textDim }} />
+                  </button>
                 </div>
 
                 <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -1528,53 +2082,145 @@ function TradingDashboard({
 
               <div className="h-[420px] sm:h-[480px] w-full pt-16 pb-1 px-1 sm:px-2">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={visibleData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                    <defs>
-                      <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#E9ECF2" stopOpacity={0.16} />
-                        <stop offset="100%" stopColor="#E9ECF2" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="rgba(255,255,255,0.05)" horizontal vertical />
-                    <XAxis
-                      dataKey="time"
-                      tickFormatter={(t) =>
-                        new Date(t).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })
-                      }
-                      tick={{ fill: c.textFaint, fontSize: 10 }}
-                      axisLine={{ stroke: c.border }}
-                      tickLine={false}
-                      minTickGap={30}
-                    />
-                    <YAxis
-                      orientation="right"
-                      domain={["auto", "auto"]}
-                      tick={{ fill: c.textFaint, fontSize: 10 }}
-                      axisLine={false}
-                      tickLine={false}
-                      width={54}
-                      tickFormatter={(v) => v.toFixed(2)}
-                    />
-                    <ReferenceLine
-                      y={currentPrice}
-                      stroke={c.textFaint}
-                      strokeDasharray="4 4"
-                      strokeOpacity={0.6}
-                      label={<CurrentPriceLabel value={currentPrice} color={trendColor} />}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="price"
-                      stroke="#E9ECF2"
-                      strokeWidth={1.75}
-                      fill="url(#priceFill)"
-                      dot={false}
-                      isAnimationActive={false}
-                    />
-                  </AreaChart>
+                  {chartType === "candles" ? (
+                    <ComposedChart data={chartDataWithOverlays} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid stroke="rgba(255,255,255,0.05)" horizontal vertical />
+                      <XAxis
+                        dataKey="time"
+                        tickFormatter={(t) =>
+                          new Date(t).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })
+                        }
+                        tick={{ fill: c.textFaint, fontSize: 10 }}
+                        axisLine={{ stroke: c.border }}
+                        tickLine={false}
+                        minTickGap={30}
+                      />
+                      <YAxis
+                        orientation="right"
+                        domain={["auto", "auto"]}
+                        tick={{ fill: c.textFaint, fontSize: 10 }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={54}
+                        tickFormatter={(v) => v.toFixed(2)}
+                      />
+                      <ReferenceLine
+                        y={currentPrice}
+                        stroke={c.textFaint}
+                        strokeDasharray="4 4"
+                        strokeOpacity={0.6}
+                        label={<CurrentPriceLabel value={currentPrice} color={trendColor} />}
+                      />
+                      <Bar dataKey="highLow" shape={<Candle />} isAnimationActive={false} />
+                      {overlayIndicators.map((ind, idx) => {
+                        const color = INDICATOR_COLORS[idx % INDICATOR_COLORS.length];
+                        if (ind.type === "bollinger") {
+                          return (
+                            <React.Fragment key={ind.id}>
+                              <Line type="monotone" dataKey={`${ind.id}_upper`} stroke={color} strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} connectNulls />
+                              <Line type="monotone" dataKey={`${ind.id}_mid`} stroke={color} strokeWidth={1.25} dot={false} isAnimationActive={false} connectNulls />
+                              <Line type="monotone" dataKey={`${ind.id}_lower`} stroke={color} strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} connectNulls />
+                            </React.Fragment>
+                          );
+                        }
+                        return (
+                          <Line key={ind.id} type="monotone" dataKey={ind.id} stroke={color} strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls />
+                        );
+                      })}
+                    </ComposedChart>
+                  ) : (
+                    <AreaChart data={chartDataWithOverlays} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                      <defs>
+                        <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#E9ECF2" stopOpacity={0.16} />
+                          <stop offset="100%" stopColor="#E9ECF2" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="rgba(255,255,255,0.05)" horizontal vertical />
+                      <XAxis
+                        dataKey="time"
+                        tickFormatter={(t) =>
+                          new Date(t).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })
+                        }
+                        tick={{ fill: c.textFaint, fontSize: 10 }}
+                        axisLine={{ stroke: c.border }}
+                        tickLine={false}
+                        minTickGap={30}
+                      />
+                      <YAxis
+                        orientation="right"
+                        domain={["auto", "auto"]}
+                        tick={{ fill: c.textFaint, fontSize: 10 }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={54}
+                        tickFormatter={(v) => v.toFixed(2)}
+                      />
+                      <ReferenceLine
+                        y={currentPrice}
+                        stroke={c.textFaint}
+                        strokeDasharray="4 4"
+                        strokeOpacity={0.6}
+                        label={<CurrentPriceLabel value={currentPrice} color={trendColor} />}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="price"
+                        stroke="#E9ECF2"
+                        strokeWidth={1.75}
+                        fill="url(#priceFill)"
+                        dot={false}
+                        isAnimationActive={false}
+                      />
+                      {overlayIndicators.map((ind, idx) => {
+                        const color = INDICATOR_COLORS[idx % INDICATOR_COLORS.length];
+                        if (ind.type === "bollinger") {
+                          return (
+                            <React.Fragment key={ind.id}>
+                              <Line type="monotone" dataKey={`${ind.id}_upper`} stroke={color} strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} connectNulls />
+                              <Line type="monotone" dataKey={`${ind.id}_mid`} stroke={color} strokeWidth={1.25} dot={false} isAnimationActive={false} connectNulls />
+                              <Line type="monotone" dataKey={`${ind.id}_lower`} stroke={color} strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} connectNulls />
+                            </React.Fragment>
+                          );
+                        }
+                        return (
+                          <Line key={ind.id} type="monotone" dataKey={ind.id} stroke={color} strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls />
+                        );
+                      })}
+                    </AreaChart>
+                  )}
                 </ResponsiveContainer>
               </div>
+
+              {oscillatorIndicators.map((ind, idx) => (
+                <OscillatorPanel
+                  key={ind.id}
+                  indicator={ind}
+                  data={oscillatorData}
+                  color={INDICATOR_COLORS[(overlayIndicators.length + idx) % INDICATOR_COLORS.length]}
+                  onRemove={() => removeIndicator(ind.id)}
+                  onEdit={() => {
+                    setEditingIndicatorId(ind.id);
+                    setIndicatorsModalOpen(true);
+                    setIndicatorsTab("current");
+                  }}
+                />
+              ))}
             </div>
+
+            <IndicatorsModal
+              open={indicatorsModalOpen}
+              onClose={() => setIndicatorsModalOpen(false)}
+              indicators={indicators}
+              tab={indicatorsTab}
+              setTab={setIndicatorsTab}
+              editingId={editingIndicatorId}
+              setEditingId={setEditingIndicatorId}
+              onAdd={addIndicator}
+              onRemove={removeIndicator}
+              onUpdateParams={updateIndicatorParams}
+              onClearAll={clearAllIndicators}
+            />
 
             <div className="flex items-center justify-center gap-1.5 mb-4 -mt-1">
               <Clock size={12} style={{ color: c.textFaint }} />
@@ -1851,7 +2497,9 @@ function TradingDashboard({
                     <span className="text-lg font-extrabold text-white">
                       {runningSide === market.left.key ? market.left.label : market.right.label}
                     </span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
+                    <span className="text-sm font-bold font-mono text-white mt-1">
+                      ${runningSide === market.left.key ? leftPayout : rightPayout}
+                    </span>
                   </div>
                   <button
                     onClick={requestStopRun}
@@ -1886,7 +2534,7 @@ function TradingDashboard({
                   >
                     <span className="text-lg font-extrabold text-white">{market.left.label}</span>
                     <span className="text-xs font-semibold text-white/85 mt-1">{market.left.hint}</span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
+                    <span className="text-sm font-bold font-mono text-white mt-1">${leftPayout}</span>
                   </button>
                   <button
                     onClick={() => handleTradeButtonClick(market.right.key)}
@@ -1903,7 +2551,7 @@ function TradingDashboard({
                   >
                     <span className="text-lg font-extrabold text-white">{market.right.label}</span>
                     <span className="text-xs font-semibold text-white/85 mt-1">{market.right.hint}</span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">${payout}</span>
+                    <span className="text-sm font-bold font-mono text-white mt-1">${rightPayout}</span>
                   </button>
                 </div>
               )}
@@ -3856,12 +4504,9 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
         amount: data.amountKes,
         usdAmount: amt,
         phone: selectedPhone,
-        status: data.status || "processing",
+        status: "pending",
         time: Date.now(),
       });
-      // Don't block here waiting for SmartPay to confirm — that can take
-      // a few minutes. Show success right away; History reconciles the
-      // real status (Processing -> Completed/Rejected) in the background.
       setStage("success");
     } catch (err) {
       setApiError(err.message || "Something went wrong");
@@ -3928,7 +4573,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           >
             <Loader2 size={28} style={{ color: c.amber }} className="animate-spin" />
           </div>
-          <h2 className="text-lg font-bold mb-2">Sending your withdrawal…</h2>
+          <h2 className="text-lg font-bold mb-2">Submitting your request…</h2>
           <p className="text-sm max-w-xs" style={{ color: c.textDim }}>
             ${Number(amount).toFixed(2)} (KES {kesEquivalent.toLocaleString()}) to{" "}
             <span style={{ color: c.text }}>{selectedPhone}</span>
@@ -3949,14 +4594,14 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
           >
             <CheckCircle2 size={30} style={{ color: c.green }} />
           </div>
-          <h2 className="text-lg font-bold mb-2">Withdrawal submitted</h2>
+          <h2 className="text-lg font-bold mb-2">Withdrawal submitted successfully</h2>
           <p className="text-sm max-w-xs mb-2" style={{ color: c.textDim }}>
-            ${Number(amount).toFixed(2)} (converted to{" "}
+            Your request to withdraw ${Number(amount).toFixed(2)} (converted to{" "}
             <span className="font-semibold" style={{ color: c.text }}>
               KES {kesEquivalent.toLocaleString()}
             </span>
-            ) is on its way to {selectedPhone}. It's sent automatically — check History to see it update to
-            Completed once M-Pesa confirms.
+            ) to {selectedPhone} has been received. Our team will process this manually and disburse the funds
+            shortly.
           </p>
           <p className="text-xs font-mono mb-8" style={{ color: c.textFaint }}>
             Reference: {reference}
@@ -4113,7 +4758,7 @@ function WithdrawScreen({ onBack, onComplete, balance, onBalanceSet, onAddPaymen
 
           <div className="flex items-center gap-2 justify-center text-xs" style={{ color: c.textFaint }}>
             <ShieldCheck size={13} />
-            Withdrawals are sent instantly via M-Pesa
+            Withdrawals are reviewed and sent manually
           </div>
         </form>
       </div>
@@ -4338,14 +4983,13 @@ function PaymentRow({ p }) {
   const isDeposit = p.type === "deposit";
   const isCrypto = p.method === "usdt_trc20";
   const pending = p.status === "pending";
-  const processing = p.status === "processing";
   const approved = p.status === "approved";
   const rejected = p.status === "rejected";
   const failed = p.status === "failed";
   const completed = p.status === "completed" || p.status === "success";
 
-  const statusLabel = pending || processing ? "Processing" : approved ? "Approved" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
-  const statusColor = pending || processing || approved ? c.amber : rejected || failed ? c.red : c.green;
+  const statusLabel = pending ? "Pending" : approved ? "Approved" : rejected ? "Rejected" : failed ? "Failed" : completed ? "Completed" : "";
+  const statusColor = pending || approved ? c.amber : rejected || failed ? c.red : c.green;
 
   const title = isCrypto
     ? (isDeposit ? "USDT deposit" : "Withdrawal to USDT wallet")
@@ -4362,12 +5006,12 @@ function PaymentRow({ p }) {
     >
       <div
         className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: pending || processing || approved ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
+        style={{ background: pending || approved ? c.amberDim : rejected || failed ? c.redDim : isDeposit ? c.greenDim : c.redDim }}
       >
         {isDeposit ? (
           <ArrowDownRight size={18} style={{ color: c.green }} />
         ) : (
-          <ArrowUpRight size={18} style={{ color: pending || processing || approved ? c.amber : c.red }} />
+          <ArrowUpRight size={18} style={{ color: pending || approved ? c.amber : c.red }} />
         )}
       </div>
       <div className="flex-1 min-w-0">
@@ -4407,26 +5051,6 @@ function HistoryScreen({ trades, payments, onBack, onRefresh }) {
   const [tab, setTab] = useState("trades"); // trades | deposits | withdrawals
   const [filter, setFilter] = useState("all"); // all | won | lost
   const [refreshing, setRefreshing] = useState(false);
-
-  // Withdrawals sent via SmartPay B2C don't arrive via webhook — their
-  // final status only updates when something actually asks SmartPay
-  // again. If the withdraw screen gave up waiting earlier, this is what
-  // eventually resolves "Processing" to "Completed"/"Rejected" instead
-  // of it sitting stuck forever.
-  useEffect(() => {
-    const stuck = payments.filter((p) => p.type === "withdrawal" && p.status === "processing");
-    if (!stuck.length) return;
-    let cancelled = false;
-    (async () => {
-      await Promise.all(
-        stuck.map((p) => backendApi(`/api/payments/withdraw/status/${p.id}`).catch(() => null))
-      );
-      if (!cancelled) onRefresh?.();
-    })();
-    return () => { cancelled = true; };
-    // Only re-run when the set of processing withdrawals actually changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payments.filter((p) => p.type === "withdrawal" && p.status === "processing").map((p) => p.id).join(",")]);
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -4769,7 +5393,7 @@ function botReplyFor(text) {
   if (t.includes("deposit"))
     return "Deposits go through M-Pesa STK Push — enter your amount, confirm the prompt on your phone, and it reflects in your Real account right away.";
   if (t.includes("withdraw"))
-    return "M-Pesa withdrawals are sent automatically and usually land within a minute or two. USDT withdrawals are still reviewed manually by our team — you'll see the status update in your History once it's processed.";
+    return "Withdrawal requests are reviewed and sent manually by our team. You'll see the status update from Pending to Completed in your History once it's processed.";
   if (t.includes("balance"))
     return "You can check your balance at the top of the Trade screen — tap it to switch between your Demo and Real accounts.";
   if (t.includes("password") || t.includes("2fa") || t.includes("verify"))
