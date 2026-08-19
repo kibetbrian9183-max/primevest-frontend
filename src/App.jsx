@@ -1332,6 +1332,7 @@ function TradingDashboard({
   const [payoutRates, setPayoutRates] = useState({
     defaultRate: 1.952,
     sideDefaults: { matches: 9.5, differs: 1.056, even: 1.95, odd: 1.95 },
+    overUnderRates: { over: {}, under: {} },
     rates: {},
   });
   useEffect(() => {
@@ -1340,12 +1341,24 @@ function TradingDashboard({
       .catch(() => {}); // keep the default on failure — never block trading
   }, []);
 
-  function currentPayoutRate(forSide) {
-    return (
-      payoutRates.rates?.[symbolId]?.[forSide] ??
-      payoutRates.sideDefaults?.[forSide] ??
-      payoutRates.defaultRate
-    );
+  function currentPayoutRate(forSide, digit = selectedDigit) {
+    const symbolOverride = payoutRates.rates?.[symbolId]?.[forSide];
+    if (symbolOverride !== undefined && symbolOverride !== null) return Number(symbolOverride);
+
+    if (forSide === "over" || forSide === "under") {
+      const digitRate = payoutRates.overUnderRates?.[forSide]?.[digit];
+      if (digitRate !== undefined && digitRate !== null) return Number(digitRate);
+
+      // Fallback for an older backend response: same 5% house-edge formula.
+      const d = Number(digit);
+      const probability = forSide === "over" ? (9 - d) / 10 : d / 10;
+      if (Number.isInteger(d) && probability > 0 && probability <= 1) {
+        return Number(((1 / probability) * 0.95).toFixed(4));
+      }
+      return null;
+    }
+
+    return Number(payoutRates.sideDefaults?.[forSide] ?? payoutRates.defaultRate);
   }
 
   const quickAmounts = [1, 5, 10, 25, 50, 100];
@@ -1378,18 +1391,30 @@ function TradingDashboard({
     },
   };
   const market = marketConfig[activeTab];
-  // Independent payout per side — this is the actual point of per-side
-  // rates existing (e.g. Match 95%, Differ 5.6%, same instrument). Both
-  // used to share one `payout` value, which silently hid this feature
-  // from the UI even when the backend supported it correctly.
-  const leftPayout = (stake * currentPayoutRate(market.left.key)).toFixed(2);
-  const rightPayout = (stake * currentPayoutRate(market.right.key)).toFixed(2);
-  // Kept for the single "Payout" summary label near the stake input,
-  // shown before a side is chosen — reflects whichever side the user
-  // most recently acted on/hovered, defaulting to the left/primary side.
-  const payout = leftPayout;
+
+  const leftRate = currentPayoutRate(market.left.key);
+  const rightRate = currentPayoutRate(market.right.key);
+  const leftPayout = leftRate == null ? null : (stake * leftRate).toFixed(2);
+  const rightPayout = rightRate == null ? null : (stake * rightRate).toFixed(2);
+  const payoutRate = leftRate;
+  const payout = leftPayout ?? "0.00";
+
+  const isInvalidOverUnder = (side) =>
+    activeTab === "overunder" &&
+    ((side === "over" && selectedDigit === 9) || (side === "under" && selectedDigit === 0));
 
   async function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt) {
+    if (
+      activeTab === "overunder" &&
+      ((side === "over" && digitSnapshot === 9) || (side === "under" && digitSnapshot === 0))
+    ) {
+      throw new Error(
+        side === "over"
+          ? "Over 9 is not a valid contract — no digit is ever greater than 9."
+          : "Under 0 is not a valid contract — no digit is ever less than 0."
+      );
+    }
+
     const marketLabel =
       activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under";
     const sideLabel = side === marketSnapshot.left.key ? marketSnapshot.left.label : marketSnapshot.right.label;
@@ -1425,7 +1450,11 @@ function TradingDashboard({
       // Use the amount the backend actually recorded/paid for, not a
       // client-side recompute — this is the one place it truly matters,
       // since it's what settles the trade.
-      payout: confirmedPayout ?? Number((stakeAmt * currentPayoutRate(side)).toFixed(2)),
+      payout:
+         confirmedPayout ??
+         (currentPayoutRate(side, digitSnapshot) == null
+           ? 0
+           : Number((stakeAmt * currentPayoutRate(side, digitSnapshot)).toFixed(2))),
       status: "open",
     });
     return tradeId;
@@ -1544,6 +1573,17 @@ function TradingDashboard({
 
   function handleTradeButtonClick(side) {
     if (tradeInFlight || autoRunning) return;
+
+    if (isInvalidOverUnder(side)) {
+      setResultAlert({
+        type: "error",
+        title: "Invalid contract",
+        message: side === "over"
+          ? "Over 9 is unavailable because no digit can be greater than 9."
+          : "Under 0 is unavailable because no digit can be less than 0.",
+      });
+      return;
+    }
 
     if (!stake || stake <= 0) {
       setResultAlert({
@@ -2521,37 +2561,47 @@ function TradingDashboard({
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={() => handleTradeButtonClick(market.left.key)}
-                    disabled={tradeInFlight}
+                    disabled={tradeInFlight || isInvalidOverUnder(market.left.key)}
                     className="flex flex-col items-center justify-center rounded-2xl py-5 transition"
                     style={{
                       background: `linear-gradient(135deg, ${c.green}, #0EA96B)`,
                       boxShadow:
                         flash === market.left.key ? `0 0 0 3px ${c.green}` : "0 10px 24px rgba(22,199,132,0.3)",
                       transform: flash === market.left.key ? "scale(0.97)" : "scale(1)",
-                      opacity: tradeInFlight ? 0.6 : 1,
-                      cursor: tradeInFlight ? "not-allowed" : "pointer",
+                      opacity: tradeInFlight || isInvalidOverUnder(market.left.key) ? 0.45 : 1,
+                      cursor: tradeInFlight || isInvalidOverUnder(market.left.key) ? "not-allowed" : "pointer",
                     }}
                   >
                     <span className="text-lg font-extrabold text-white">{market.left.label}</span>
                     <span className="text-xs font-semibold text-white/85 mt-1">{market.left.hint}</span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">${leftPayout}</span>
+                    <span className="text-xs font-bold font-mono text-white mt-1">
+                       {leftRate == null ? "Unavailable" : `${leftRate.toFixed(2)}× payout`}
+                     </span>
+                     <span className="text-sm font-bold font-mono text-white mt-0.5">
+                       {leftPayout == null ? "—" : `$${leftPayout}`}
+                     </span>
                   </button>
                   <button
                     onClick={() => handleTradeButtonClick(market.right.key)}
-                    disabled={tradeInFlight}
+                    disabled={tradeInFlight || isInvalidOverUnder(market.right.key)}
                     className="flex flex-col items-center justify-center rounded-2xl py-5 transition"
                     style={{
                       background: `linear-gradient(135deg, ${c.red}, #D8283F)`,
                       boxShadow:
                         flash === market.right.key ? `0 0 0 3px ${c.red}` : "0 10px 24px rgba(246,70,93,0.3)",
                       transform: flash === market.right.key ? "scale(0.97)" : "scale(1)",
-                      opacity: tradeInFlight ? 0.6 : 1,
-                      cursor: tradeInFlight ? "not-allowed" : "pointer",
+                      opacity: tradeInFlight || isInvalidOverUnder(market.right.key) ? 0.45 : 1,
+                      cursor: tradeInFlight || isInvalidOverUnder(market.right.key) ? "not-allowed" : "pointer",
                     }}
                   >
                     <span className="text-lg font-extrabold text-white">{market.right.label}</span>
                     <span className="text-xs font-semibold text-white/85 mt-1">{market.right.hint}</span>
-                    <span className="text-sm font-bold font-mono text-white mt-1">${rightPayout}</span>
+                    <span className="text-xs font-bold font-mono text-white mt-1">
+                       {rightRate == null ? "Unavailable" : `${rightRate.toFixed(2)}× payout`}
+                     </span>
+                     <span className="text-sm font-bold font-mono text-white mt-0.5">
+                       {rightPayout == null ? "—" : `$${rightPayout}`}
+                     </span>
                   </button>
                 </div>
               )}
