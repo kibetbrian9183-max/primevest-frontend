@@ -1332,7 +1332,7 @@ function TradingDashboard({
   const [payoutRates, setPayoutRates] = useState({
     defaultRate: 1.952,
     sideDefaults: { matches: 9.5, differs: 1.056, even: 1.95, odd: 1.95 },
-    overUnderRates: { over: {}, under: {} },
+    overUnderEdgeFactor: 0.95,
     rates: {},
   });
   useEffect(() => {
@@ -1341,24 +1341,33 @@ function TradingDashboard({
       .catch(() => {}); // keep the default on failure — never block trading
   }, []);
 
-  function currentPayoutRate(forSide, digit = selectedDigit) {
-    const symbolOverride = payoutRates.rates?.[symbolId]?.[forSide];
-    if (symbolOverride !== undefined && symbolOverride !== null) return Number(symbolOverride);
+  // How many of the 10 digits actually win an Over/Under bet at this
+  // digit — mirrors overUnderWinCount in routes/trades.js exactly. Over 9
+  // and Under 0 return 0: unwinnable bets, never priced or offered.
+  function overUnderWinCount(forSide, digit) {
+    const d = Number(digit);
+    if (!Number.isInteger(d) || d < 0 || d > 9) return 0;
+    return forSide === "over" ? 9 - d : d;
+  }
 
+  function currentPayoutRate(forSide) {
     if (forSide === "over" || forSide === "under") {
-      const digitRate = payoutRates.overUnderRates?.[forSide]?.[digit];
-      if (digitRate !== undefined && digitRate !== null) return Number(digitRate);
-
-      // Fallback for an older backend response: same 5% house-edge formula.
-      const d = Number(digit);
-      const probability = forSide === "over" ? (9 - d) / 10 : d / 10;
-      if (Number.isInteger(d) && probability > 0 && probability <= 1) {
-        return Number(((1 / probability) * 0.95).toFixed(4));
-      }
-      return null;
+      const winCount = overUnderWinCount(forSide, selectedDigit);
+      if (winCount <= 0) return 0; // impossible bet — see isImpossibleBet below
+      return payoutRates.overUnderEdgeFactor * (10 / winCount);
     }
+    return (
+      payoutRates.rates?.[symbolId]?.[forSide] ??
+      payoutRates.sideDefaults?.[forSide] ??
+      payoutRates.defaultRate
+    );
+  }
 
-    return Number(payoutRates.sideDefaults?.[forSide] ?? payoutRates.defaultRate);
+  // True when the current digit makes Over or Under mathematically
+  // unwinnable (Over 9, Under 0) — used to disable that button and show
+  // a clear reason instead of a $0.00 payout that looks like a bug.
+  function isImpossibleBet(forSide) {
+    return (forSide === "over" || forSide === "under") && overUnderWinCount(forSide, selectedDigit) <= 0;
   }
 
   const quickAmounts = [1, 5, 10, 25, 50, 100];
@@ -1391,30 +1400,18 @@ function TradingDashboard({
     },
   };
   const market = marketConfig[activeTab];
-
-  const leftRate = currentPayoutRate(market.left.key);
-  const rightRate = currentPayoutRate(market.right.key);
-  const leftPayout = leftRate == null ? null : (stake * leftRate).toFixed(2);
-  const rightPayout = rightRate == null ? null : (stake * rightRate).toFixed(2);
-  const payoutRate = leftRate;
-  const payout = leftPayout ?? "0.00";
-
-  const isInvalidOverUnder = (side) =>
-    activeTab === "overunder" &&
-    ((side === "over" && selectedDigit === 9) || (side === "under" && selectedDigit === 0));
+  // Independent payout per side — this is the actual point of per-side
+  // rates existing (e.g. Match 95%, Differ 5.6%, same instrument). Both
+  // used to share one `payout` value, which silently hid this feature
+  // from the UI even when the backend supported it correctly.
+  const leftPayout = (stake * currentPayoutRate(market.left.key)).toFixed(2);
+  const rightPayout = (stake * currentPayoutRate(market.right.key)).toFixed(2);
+  // Kept for the single "Payout" summary label near the stake input,
+  // shown before a side is chosen — reflects whichever side the user
+  // most recently acted on/hovered, defaulting to the left/primary side.
+  const payout = leftPayout;
 
   async function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt) {
-    if (
-      activeTab === "overunder" &&
-      ((side === "over" && digitSnapshot === 9) || (side === "under" && digitSnapshot === 0))
-    ) {
-      throw new Error(
-        side === "over"
-          ? "Over 9 is not a valid contract — no digit is ever greater than 9."
-          : "Under 0 is not a valid contract — no digit is ever less than 0."
-      );
-    }
-
     const marketLabel =
       activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under";
     const sideLabel = side === marketSnapshot.left.key ? marketSnapshot.left.label : marketSnapshot.right.label;
@@ -1450,11 +1447,7 @@ function TradingDashboard({
       // Use the amount the backend actually recorded/paid for, not a
       // client-side recompute — this is the one place it truly matters,
       // since it's what settles the trade.
-      payout:
-         confirmedPayout ??
-         (currentPayoutRate(side, digitSnapshot) == null
-           ? 0
-           : Number((stakeAmt * currentPayoutRate(side, digitSnapshot)).toFixed(2))),
+      payout: confirmedPayout ?? Number((stakeAmt * currentPayoutRate(side)).toFixed(2)),
       status: "open",
     });
     return tradeId;
@@ -1573,17 +1566,6 @@ function TradingDashboard({
 
   function handleTradeButtonClick(side) {
     if (tradeInFlight || autoRunning) return;
-
-    if (isInvalidOverUnder(side)) {
-      setResultAlert({
-        type: "error",
-        title: "Invalid contract",
-        message: side === "over"
-          ? "Over 9 is unavailable because no digit can be greater than 9."
-          : "Under 0 is unavailable because no digit can be less than 0.",
-      });
-      return;
-    }
 
     if (!stake || stake <= 0) {
       setResultAlert({
@@ -2561,47 +2543,53 @@ function TradingDashboard({
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={() => handleTradeButtonClick(market.left.key)}
-                    disabled={tradeInFlight || isInvalidOverUnder(market.left.key)}
+                    disabled={tradeInFlight || isImpossibleBet(market.left.key)}
                     className="flex flex-col items-center justify-center rounded-2xl py-5 transition"
                     style={{
-                      background: `linear-gradient(135deg, ${c.green}, #0EA96B)`,
+                      background: isImpossibleBet(market.left.key)
+                        ? c.surfaceAlt
+                        : `linear-gradient(135deg, ${c.green}, #0EA96B)`,
                       boxShadow:
                         flash === market.left.key ? `0 0 0 3px ${c.green}` : "0 10px 24px rgba(22,199,132,0.3)",
                       transform: flash === market.left.key ? "scale(0.97)" : "scale(1)",
-                      opacity: tradeInFlight || isInvalidOverUnder(market.left.key) ? 0.45 : 1,
-                      cursor: tradeInFlight || isInvalidOverUnder(market.left.key) ? "not-allowed" : "pointer",
+                      opacity: tradeInFlight ? 0.6 : 1,
+                      cursor: tradeInFlight || isImpossibleBet(market.left.key) ? "not-allowed" : "pointer",
                     }}
                   >
                     <span className="text-lg font-extrabold text-white">{market.left.label}</span>
-                    <span className="text-xs font-semibold text-white/85 mt-1">{market.left.hint}</span>
-                    <span className="text-xs font-bold font-mono text-white mt-1">
-                       {leftRate == null ? "Unavailable" : `${leftRate.toFixed(2)}× payout`}
-                     </span>
-                     <span className="text-sm font-bold font-mono text-white mt-0.5">
-                       {leftPayout == null ? "—" : `$${leftPayout}`}
-                     </span>
+                    {isImpossibleBet(market.left.key) ? (
+                      <span className="text-xs font-semibold text-white/85 mt-1">Can't win at this digit</span>
+                    ) : (
+                      <>
+                        <span className="text-xs font-semibold text-white/85 mt-1">{market.left.hint}</span>
+                        <span className="text-sm font-bold font-mono text-white mt-1">${leftPayout}</span>
+                      </>
+                    )}
                   </button>
                   <button
                     onClick={() => handleTradeButtonClick(market.right.key)}
-                    disabled={tradeInFlight || isInvalidOverUnder(market.right.key)}
+                    disabled={tradeInFlight || isImpossibleBet(market.right.key)}
                     className="flex flex-col items-center justify-center rounded-2xl py-5 transition"
                     style={{
-                      background: `linear-gradient(135deg, ${c.red}, #D8283F)`,
+                      background: isImpossibleBet(market.right.key)
+                        ? c.surfaceAlt
+                        : `linear-gradient(135deg, ${c.red}, #D8283F)`,
                       boxShadow:
                         flash === market.right.key ? `0 0 0 3px ${c.red}` : "0 10px 24px rgba(246,70,93,0.3)",
                       transform: flash === market.right.key ? "scale(0.97)" : "scale(1)",
-                      opacity: tradeInFlight || isInvalidOverUnder(market.right.key) ? 0.45 : 1,
-                      cursor: tradeInFlight || isInvalidOverUnder(market.right.key) ? "not-allowed" : "pointer",
+                      opacity: tradeInFlight ? 0.6 : 1,
+                      cursor: tradeInFlight || isImpossibleBet(market.right.key) ? "not-allowed" : "pointer",
                     }}
                   >
                     <span className="text-lg font-extrabold text-white">{market.right.label}</span>
-                    <span className="text-xs font-semibold text-white/85 mt-1">{market.right.hint}</span>
-                    <span className="text-xs font-bold font-mono text-white mt-1">
-                       {rightRate == null ? "Unavailable" : `${rightRate.toFixed(2)}× payout`}
-                     </span>
-                     <span className="text-sm font-bold font-mono text-white mt-0.5">
-                       {rightPayout == null ? "—" : `$${rightPayout}`}
-                     </span>
+                    {isImpossibleBet(market.right.key) ? (
+                      <span className="text-xs font-semibold text-white/85 mt-1">Can't win at this digit</span>
+                    ) : (
+                      <>
+                        <span className="text-xs font-semibold text-white/85 mt-1">{market.right.hint}</span>
+                        <span className="text-sm font-bold font-mono text-white mt-1">${rightPayout}</span>
+                      </>
+                    )}
                   </button>
                 </div>
               )}
@@ -5101,6 +5089,36 @@ function HistoryScreen({ trades, payments, onBack, onRefresh }) {
   const [tab, setTab] = useState("trades"); // trades | deposits | withdrawals
   const [filter, setFilter] = useState("all"); // all | won | lost
   const [refreshing, setRefreshing] = useState(false);
+
+  // Neither deposits nor withdrawals resolve themselves automatically if
+  // their webhook/callback never arrives — deposits rely entirely on
+  // SmartPay's STK callback, withdrawals on polling B2C status. If either
+  // failed to deliver, the record just sits "pending"/"processing"
+  // forever until something actively asks again. This is that "something
+  // asks again" — runs whenever History loads, so a stuck payment
+  // self-heals the next time the user checks, instead of needing a
+  // manual database fix every time.
+  useEffect(() => {
+    const stuckDeposits = payments.filter((p) => p.type === "deposit" && p.status === "pending");
+    const stuckWithdrawals = payments.filter((p) => p.type === "withdrawal" && p.status === "processing");
+    if (!stuckDeposits.length && !stuckWithdrawals.length) return;
+    let cancelled = false;
+    (async () => {
+      await Promise.all([
+        ...stuckDeposits.map((p) => backendApi(`/api/payments/deposit/status/${p.id}`).catch(() => null)),
+        ...stuckWithdrawals.map((p) => backendApi(`/api/payments/withdraw/status/${p.id}`).catch(() => null)),
+      ]);
+      if (!cancelled) onRefresh?.();
+    })();
+    return () => { cancelled = true; };
+    // Only re-run when the actual set of stuck items changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    payments
+      .filter((p) => (p.type === "deposit" && p.status === "pending") || (p.type === "withdrawal" && p.status === "processing"))
+      .map((p) => p.id)
+      .join(","),
+  ]);
 
   async function handleRefresh() {
     setRefreshing(true);
