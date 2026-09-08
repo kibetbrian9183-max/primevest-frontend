@@ -2314,11 +2314,10 @@ function TradingDashboard({
                       <span
                         className={digit === livePointerDigit ? "animate-bounce" : ""}
                         style={{
-                          width: 0,
-                          height: 0,
-                          borderLeft: "3px solid transparent",
-                          borderRight: "3px solid transparent",
-                          borderBottom: `4px solid ${digit === livePointerDigit ? c.textDim : "transparent"}`,
+                          width: 5,
+                          height: 5,
+                          borderRadius: "50%",
+                          background: digit === livePointerDigit ? c.text : "transparent",
                         }}
                       />
                       <span
