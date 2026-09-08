@@ -1174,6 +1174,22 @@ function TradingDashboard({
   const [stopRequested, setStopRequested] = useState(false);
   const [sessionStats, setSessionStats] = useState({ trades: 0, wins: 0, losses: 0, net: 0 });
   const [tickingDigit, setTickingDigit] = useState(null); // digit currently flashing while a trade resolves
+  // Purely a live-feel touch, not tied to any real outcome — hops to a
+  // new random digit every ~700ms so the digit row never looks static
+  // while idle. Distinct from tickingDigit (trade resolution) and
+  // selectedDigit (the user's actual pick) — all three can coexist
+  // without visually colliding since each renders differently.
+  const [livePointerDigit, setLivePointerDigit] = useState(() => Math.floor(Math.random() * 10));
+  useEffect(() => {
+    const id = setInterval(() => {
+      setLivePointerDigit((prev) => {
+        let next = Math.floor(Math.random() * 10);
+        while (next === prev) next = Math.floor(Math.random() * 10); // always actually moves, never "sticks"
+        return next;
+      });
+    }, 700);
+    return () => clearInterval(id);
+  }, []);
   const tickIntervalRef = useRef(null);
   const [revealedResult, setRevealedResult] = useState(null); // { digit, won } shown briefly after resolving
 
@@ -1337,7 +1353,12 @@ function TradingDashboard({
   });
   useEffect(() => {
     backendApi("/api/trades/payout-rates")
-      .then(setPayoutRates)
+      // Merge onto the defaults rather than replacing state outright —
+      // if the deployed backend is running an older version of this
+      // route and its response is missing a newer field (like
+      // overUnderEdgeFactor), that field should keep its safe default
+      // instead of becoming undefined and turning every payout into NaN.
+      .then((data) => setPayoutRates((prev) => ({ ...prev, ...data })))
       .catch(() => {}); // keep the default on failure — never block trading
   }, []);
 
@@ -2290,6 +2311,16 @@ function TradingDashboard({
                       className="flex-shrink-0 flex flex-col items-center gap-1"
                       style={{ cursor: interactive ? "pointer" : "default" }}
                     >
+                      <span
+                        className={digit === livePointerDigit ? "animate-bounce" : ""}
+                        style={{
+                          width: 0,
+                          height: 0,
+                          borderLeft: "3px solid transparent",
+                          borderRight: "3px solid transparent",
+                          borderBottom: `4px solid ${digit === livePointerDigit ? c.textDim : "transparent"}`,
+                        }}
+                      />
                       <span
                         className="flex items-center justify-center rounded-full font-bold text-base transition-all"
                         style={{
