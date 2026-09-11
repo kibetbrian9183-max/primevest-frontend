@@ -936,6 +936,260 @@ function AIScannerModal({ onClose, onLoadMarket }) {
   );
 }
 
+// Shown from the bottom nav's "AI" button — a plain chooser between the
+// Entry Scanner (a randomized suggestion, clearly labeled as such) and
+// the Automate bot (a real, configurable auto-trading loop). Kept as a
+// simple list, not styled as an "AI feature" — no purple gradients, no
+// sparkle iconography, matching the rest of the app's actual palette.
+function AiMenuModal({ onClose, onPickScanner, onPickAutomate }) {
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center px-5 pb-5 sm:pb-0">
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose} />
+      <div
+        className="relative w-full max-w-sm rounded-3xl border overflow-hidden"
+        style={{ background: c.surface, borderColor: c.border }}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: c.border }}>
+          <span className="text-base font-bold">Trading tools</span>
+          <button onClick={onClose} aria-label="Close">
+            <X size={18} style={{ color: c.textDim }} />
+          </button>
+        </div>
+        <div className="p-3 flex flex-col gap-2">
+          <button
+            onClick={onPickScanner}
+            className="flex items-center gap-3 rounded-2xl p-4 text-left"
+            style={{ background: c.surfaceAlt }}
+          >
+            <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: c.amberDim }}>
+              <Search size={20} style={{ color: c.amber }} />
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-bold">Entry Scanner</div>
+              <div className="text-xs" style={{ color: c.textDim }}>A random suggested entry to start from</div>
+            </div>
+            <ChevronRight size={18} style={{ color: c.textFaint }} />
+          </button>
+          <button
+            onClick={onPickAutomate}
+            className="flex items-center gap-3 rounded-2xl p-4 text-left"
+            style={{ background: c.surfaceAlt }}
+          >
+            <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: c.greenDim }}>
+              <Bot size={20} style={{ color: c.green }} />
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-bold">Automate</div>
+              <div className="text-xs" style={{ color: c.textDim }}>Set your rules once, let it run automatically</div>
+            </div>
+            <ChevronRight size={18} style={{ color: c.textFaint }} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Configures and starts an AUTO run — Duration, Stake, Strategy, and Risk
+// management all feed the SAME runTick loop the manual AUTO panel uses
+// (see TradingDashboard.startAutomateBot). Every field here does
+// something real:
+//   - Duration scales the actual resolve delay for each trade.
+//   - Strategy + Stake multiplier + Max stake genuinely escalate/reset
+//     the stake after each loss/win when "Martingale" is selected.
+//   - Profit/Loss thresholds are the same stop conditions the manual
+//     panel already enforces.
+// "Allow equals" from the reference design isn't included — this app's
+// markets (Matches/Differs, Even/Odd, Over/Under) don't have an "equals"
+// outcome distinct from what's already covered, so a toggle for it would
+// have nothing to actually do.
+function AutomateBotModal({ market, onClose, onRun, initialStake, initialTargetProfit, initialStopLoss, initialMultiplier }) {
+  const [side, setSide] = useState(market.left.key);
+  const [durationTicks, setDurationTicks] = useState("5");
+  const [stake, setStake] = useState(String(initialStake || 1));
+  const [strategy, setStrategy] = useState("martingale"); // "martingale" | "flat"
+  const [multiplier, setMultiplier] = useState(String(initialMultiplier || 2));
+  const [maxStake, setMaxStake] = useState("");
+  const [profitThreshold, setProfitThreshold] = useState(String(initialTargetProfit || ""));
+  const [lossThreshold, setLossThreshold] = useState(String(initialStopLoss || ""));
+
+  function handleRun() {
+    onRun(side, {
+      durationTicks,
+      stake,
+      strategy,
+      multiplier,
+      maxStake,
+      profitThreshold,
+      lossThreshold,
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center">
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.65)" }} onClick={onClose} />
+      <div
+        className="relative w-full sm:max-w-sm sm:rounded-3xl rounded-t-3xl max-h-[88vh] flex flex-col"
+        style={{ background: c.surface, borderColor: c.border, border: "1px solid" }}
+      >
+        <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: c.border }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: c.greenDim }}>
+            <Bot size={17} style={{ color: c.green }} />
+          </div>
+          <span className="text-base font-bold flex-1">Automate</span>
+          <button onClick={onClose} aria-label="Close">
+            <X size={18} style={{ color: c.textDim }} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto flex flex-col gap-5">
+          <div>
+            <label className="text-xs font-semibold mb-2 block" style={{ color: c.textDim }}>Trade on</label>
+            <div className="grid grid-cols-2 gap-2">
+              {[market.left, market.right].map((opt) => {
+                const selected = side === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => setSide(opt.key)}
+                    className="h-11 rounded-xl text-sm font-bold"
+                    style={{
+                      background: selected ? c.amber : c.surfaceAlt,
+                      color: selected ? "#181205" : c.textDim,
+                      border: `1px solid ${selected ? c.amber : c.border}`,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Duration</label>
+            <div className="flex items-center h-12 rounded-2xl border px-4" style={{ background: c.bg, borderColor: c.border }}>
+              <input
+                value={durationTicks}
+                onChange={(e) => setDurationTicks(e.target.value.replace(/[^0-9]/g, ""))}
+                inputMode="numeric"
+                className="flex-1 bg-transparent outline-none text-sm font-bold"
+                style={{ color: c.text }}
+              />
+              <span className="text-xs font-semibold" style={{ color: c.textFaint }}>ticks</span>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Stake</label>
+            <div className="flex items-center h-12 rounded-2xl border px-4" style={{ background: c.bg, borderColor: c.border }}>
+              <span className="text-sm font-bold mr-1" style={{ color: c.textDim }}>$</span>
+              <input
+                value={stake}
+                onChange={(e) => setStake(e.target.value.replace(/[^0-9.]/g, ""))}
+                inputMode="decimal"
+                className="flex-1 bg-transparent outline-none text-sm font-bold"
+                style={{ color: c.text }}
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="text-sm font-bold mb-3">Strategy parameters</div>
+            <div className="flex flex-col gap-3">
+              <div>
+                <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Strategy</label>
+                <select
+                  value={strategy}
+                  onChange={(e) => setStrategy(e.target.value)}
+                  className="w-full h-12 rounded-2xl px-4 text-sm font-bold outline-none"
+                  style={{ background: c.bg, border: `1px solid ${c.border}`, color: c.text }}
+                >
+                  <option value="martingale">Martingale</option>
+                  <option value="flat">Flat (no change)</option>
+                </select>
+              </div>
+              {strategy === "martingale" && (
+                <>
+                  <div>
+                    <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Stake multiplier</label>
+                    <div className="flex items-center h-12 rounded-2xl border px-4" style={{ background: c.bg, borderColor: c.border }}>
+                      <span className="text-sm font-bold mr-1" style={{ color: c.textDim }}>x</span>
+                      <input
+                        value={multiplier}
+                        onChange={(e) => setMultiplier(e.target.value.replace(/[^0-9.]/g, ""))}
+                        inputMode="decimal"
+                        className="flex-1 bg-transparent outline-none text-sm font-bold"
+                        style={{ color: c.text }}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Max. stake</label>
+                    <div className="flex items-center h-12 rounded-2xl border px-4" style={{ background: c.bg, borderColor: c.border }}>
+                      <span className="text-sm font-bold mr-1" style={{ color: c.textDim }}>$</span>
+                      <input
+                        value={maxStake}
+                        onChange={(e) => setMaxStake(e.target.value.replace(/[^0-9.]/g, ""))}
+                        placeholder="No limit"
+                        inputMode="decimal"
+                        className="flex-1 bg-transparent outline-none text-sm font-bold"
+                        style={{ color: c.text }}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-sm font-bold mb-3">Risk management</div>
+            <div className="flex flex-col gap-3">
+              <div>
+                <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Profit threshold</label>
+                <div className="flex items-center h-12 rounded-2xl border px-4" style={{ background: c.bg, borderColor: c.border }}>
+                  <span className="text-sm font-bold mr-1" style={{ color: c.textDim }}>$</span>
+                  <input
+                    value={profitThreshold}
+                    onChange={(e) => setProfitThreshold(e.target.value.replace(/[^0-9.]/g, ""))}
+                    inputMode="decimal"
+                    className="flex-1 bg-transparent outline-none text-sm font-bold"
+                    style={{ color: c.text }}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Loss threshold</label>
+                <div className="flex items-center h-12 rounded-2xl border px-4" style={{ background: c.bg, borderColor: c.border }}>
+                  <span className="text-sm font-bold mr-1" style={{ color: c.textDim }}>$</span>
+                  <input
+                    value={lossThreshold}
+                    onChange={(e) => setLossThreshold(e.target.value.replace(/[^0-9.]/g, ""))}
+                    inputMode="decimal"
+                    className="flex-1 bg-transparent outline-none text-sm font-bold"
+                    style={{ color: c.text }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 border-t flex-shrink-0" style={{ borderColor: c.border }}>
+          <button
+            onClick={handleRun}
+            className="w-full h-13 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
+            style={{ height: 52, background: c.green, color: "#06210F" }}
+          >
+            <TrendingUp size={16} /> Run
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PositionsPanel({ trades, posTab, setPosTab }) {
   const open = trades.filter((t) => t.status === "open");
   const closed = trades.filter((t) => t.status === "won" || t.status === "lost");
@@ -1363,6 +1617,12 @@ function TradingDashboard({
   }, []);
 
   // How many of the 10 digits actually win an Over/Under bet at this
+  const [botStrategy, setBotStrategy] = useState("martingale"); // "martingale" | "flat"
+  const [botMaxStake, setBotMaxStake] = useState("");
+  const [botDurationTicks, setBotDurationTicks] = useState("5");
+  const [automateOpen, setAutomateOpen] = useState(false);
+  const [aiMenuOpen, setAiMenuOpen] = useState(false);
+
   // digit — mirrors overUnderWinCount in routes/trades.js exactly. Over 9
   // and Under 0 return 0: unwinnable bets, never priced or offered.
   function overUnderWinCount(forSide, digit) {
@@ -1474,7 +1734,7 @@ function TradingDashboard({
     return tradeId;
   }
 
-  async function runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfitVal, stopLossVal, isAuto) {
+  async function runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfitVal, stopLossVal, isAuto, botConfig) {
     let id;
     try {
       id = await openPosition(side, marketSnapshot, digitSnapshot, stakeAmt);
@@ -1495,6 +1755,13 @@ function TradingDashboard({
     tickIntervalRef.current = setInterval(() => {
       setTickingDigit(Math.floor(Math.random() * 10));
     }, 120);
+
+    // Resolve delay scales with Duration (ticks) instead of being a fixed
+    // 1400ms regardless of what the bot was configured for — 5 ticks *
+    // 280ms/tick = 1400ms, matching the previous hardcoded default exactly
+    // when no bot config overrides it.
+    const durationTicks = botConfig?.durationTicks ? Math.max(1, Number(botConfig.durationTicks)) : 5;
+    const resolveDelay = durationTicks * 280;
 
     window.setTimeout(async () => {
       let result;
@@ -1577,12 +1844,28 @@ function TradingDashboard({
           } lost. Net ${next.net >= 0 ? "+" : ""}$${next.net.toFixed(2)}.`,
         });
       } else {
+        // Martingale: escalate the stake after a loss (capped at
+        // maxStake if one was set), reset to the base stake after a
+        // win. "Flat" (or no bot config at all — manual AUTO from the
+        // right panel) keeps the same stake every trade, same as before
+        // this feature existed.
+        let nextStake = stakeAmt;
+        if (botConfig?.strategy === "martingale") {
+          if (!won) {
+            const multiplied = stakeAmt * (Number(botConfig.multiplier) || 2);
+            const cap = Number(botConfig.maxStake);
+            nextStake = cap > 0 ? Math.min(multiplied, cap) : multiplied;
+          } else {
+            nextStake = Number(botConfig.baseStake) || stakeAmt;
+          }
+          nextStake = Number(nextStake.toFixed(2));
+        }
         window.setTimeout(
-          () => runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfitVal, stopLossVal, true),
+          () => runTick(side, marketSnapshot, digitSnapshot, nextStake, targetProfitVal, stopLossVal, true, botConfig),
           350
         );
       }
-    }, 1400);
+    }, resolveDelay);
   }
 
   function handleTradeButtonClick(side) {
@@ -1622,25 +1905,71 @@ function TradingDashboard({
       setStopRequested(false);
       setAutoRunning(true);
       setRunningSide(side);
-      runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfit, stopLoss, true);
+      // The right panel's Multiplier field was previously decorative —
+      // collected but never applied. This is what actually wires it up:
+      // treats it as a Martingale escalator (the only strategy this
+      // quick-start panel ever implied), no cap since there's no Max
+      // Stake field here — see the Automate bot for a capped version.
+      runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfit, stopLoss, true, {
+        strategy: "martingale",
+        multiplier: Number(multiplier) || 2,
+        baseStake: stakeAmt,
+        maxStake: null,
+        durationTicks: 5,
+      });
     } else {
       setTradeInFlight(true);
       runTick(side, marketSnapshot, digitSnapshot, stakeAmt, null, null, false);
     }
   }
 
+  /**
+   * Starts an AUTO run from the Automate bot modal's configuration —
+   * same underlying runTick loop as the quick AUTO panel, just sourced
+   * from the bot's own stake/strategy/duration/risk fields instead of
+   * the right panel's. `side` is whichever button (left/right) the bot
+   * modal's picker had selected when Run was tapped.
+   */
+  function startAutomateBot(side, config) {
+    if (tradeInFlight || autoRunning) return;
+    const stakeAmt = Number(config.stake);
+    if (!stakeAmt || stakeAmt <= 0) {
+      setResultAlert({ type: "error", title: "Enter a stake", message: "Enter a stake amount before running the bot." });
+      return;
+    }
+    if (stakeAmt > balance) {
+      setResultAlert({
+        type: "error",
+        title: "Insufficient balance",
+        message: `Your stake is $${stakeAmt.toFixed(2)} but your balance is only $${balance.toFixed(2)}.`,
+      });
+      return;
+    }
+
+    const marketSnapshot = market;
+    const digitSnapshot = selectedDigit;
+
+    setStake(stakeAmt);
+    setStakeInput(String(stakeAmt));
+    setMode("AUTO");
+    runningRef.current = true;
+    sessionStatsRef.current = { trades: 0, wins: 0, losses: 0, net: 0 };
+    setSessionStats(sessionStatsRef.current);
+    setStopRequested(false);
+    setAutoRunning(true);
+    setRunningSide(side);
+    runTick(side, marketSnapshot, digitSnapshot, stakeAmt, config.profitThreshold, config.lossThreshold, true, {
+      strategy: config.strategy,
+      multiplier: Number(config.multiplier) || 2,
+      baseStake: stakeAmt,
+      maxStake: Number(config.maxStake) || null,
+      durationTicks: config.durationTicks,
+    });
+  }
+
   function requestStopRun() {
     runningRef.current = false;
     setStopRequested(true);
-  }
-
-  function loadScannedMarket(result, marketChoice) {
-    if (autoRunning) return; // don't yank the market out from under a live session
-    switchSymbol(result.symbol.id);
-    setActiveTab(marketChoice);
-    if (marketChoice !== "evenodd") setSelectedDigit(result.digit);
-    setAiScannerOpen(false);
-    setView("trade");
   }
 
   return (
@@ -2656,7 +2985,7 @@ function TradingDashboard({
           return (
             <button
               key={label}
-              onClick={() => (id === "ai" ? setAiScannerOpen(true) : setView(id))}
+              onClick={() => (id === "ai" ? setAiMenuOpen(true) : setView(id))}
               className="flex flex-col items-center gap-1"
             >
               <Icon size={21} style={{ color: active ? c.amber : c.textDim }} />
@@ -2668,7 +2997,21 @@ function TradingDashboard({
         })}
       </nav>
 
-      {/* ================= AI ENTRY SCANNER ================= */}
+      {/* ================= AI TOOLS: CHOOSER, ENTRY SCANNER, AUTOMATE ================= */}
+      {aiMenuOpen && (
+        <AiMenuModal
+          onClose={() => setAiMenuOpen(false)}
+          onPickScanner={() => {
+            setAiMenuOpen(false);
+            setAiScannerOpen(true);
+          }}
+          onPickAutomate={() => {
+            setAiMenuOpen(false);
+            setAutomateOpen(true);
+          }}
+        />
+      )}
+
       {aiScannerOpen && (
         <AIScannerModal
           onClose={() => setAiScannerOpen(false)}
@@ -2676,9 +3019,20 @@ function TradingDashboard({
         />
       )}
 
-      {/* ================= AI ENTRY SCANNER ================= */}
-      {aiScannerOpen && (
-        <AIScannerModal onClose={() => setAiScannerOpen(false)} onLoadMarket={loadScannedMarket} />
+      {automateOpen && (
+        <AutomateBotModal
+          market={market}
+          onClose={() => setAutomateOpen(false)}
+          initialStake={stake}
+          initialTargetProfit={targetProfit}
+          initialStopLoss={stopLoss}
+          initialMultiplier={multiplier}
+          onRun={(side, config) => {
+            setAutomateOpen(false);
+            setView("trade");
+            startAutomateBot(side, config);
+          }}
+        />
       )}
 
       {/* ================= TRADE RESULT ALERT ================= */}
