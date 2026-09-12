@@ -1003,7 +1003,9 @@ function AiMenuModal({ onClose, onPickScanner, onPickAutomate }) {
 // markets (Matches/Differs, Even/Odd, Over/Under) don't have an "equals"
 // outcome distinct from what's already covered, so a toggle for it would
 // have nothing to actually do.
-function AutomateBotModal({ market, onClose, onRun, initialStake, initialTargetProfit, initialStopLoss, initialMultiplier }) {
+function AutomateBotModal({ marketConfig, initialTab, onClose, onRun, initialStake, initialTargetProfit, initialStopLoss, initialMultiplier }) {
+  const [marketTab, setMarketTab] = useState(initialTab);
+  const market = marketConfig[marketTab];
   const [side, setSide] = useState(market.left.key);
   const [durationTicks, setDurationTicks] = useState("5");
   const [stake, setStake] = useState(String(initialStake || 1));
@@ -1013,8 +1015,16 @@ function AutomateBotModal({ market, onClose, onRun, initialStake, initialTargetP
   const [profitThreshold, setProfitThreshold] = useState(String(initialTargetProfit || ""));
   const [lossThreshold, setLossThreshold] = useState(String(initialStopLoss || ""));
 
+  // Switching market type resets the side to that market's left/primary
+  // option — "Matches" no longer applies once you're on Even/Odd, so
+  // keeping the old side selected would be meaningless.
+  function switchMarketTab(tabId) {
+    setMarketTab(tabId);
+    setSide(marketConfig[tabId].left.key);
+  }
+
   function handleRun() {
-    onRun(side, {
+    onRun(marketTab, side, {
       durationTicks,
       stake,
       strategy,
@@ -1043,6 +1053,29 @@ function AutomateBotModal({ market, onClose, onRun, initialStake, initialTargetP
         </div>
 
         <div className="px-5 py-4 overflow-y-auto flex flex-col gap-5">
+          <div>
+            <label className="text-xs font-semibold mb-2 block" style={{ color: c.textDim }}>Market</label>
+            <div className="grid grid-cols-3 gap-2">
+              {SCANNER_MARKETS.map((m) => {
+                const selected = marketTab === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => switchMarketTab(m.id)}
+                    className="h-11 rounded-xl text-xs font-bold px-1"
+                    style={{
+                      background: selected ? c.amber : c.surfaceAlt,
+                      color: selected ? "#181205" : c.textDim,
+                      border: `1px solid ${selected ? c.amber : c.border}`,
+                    }}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div>
             <label className="text-xs font-semibold mb-2 block" style={{ color: c.textDim }}>Trade on</label>
             <div className="grid grid-cols-2 gap-2">
@@ -1692,9 +1725,9 @@ function TradingDashboard({
   // most recently acted on/hovered, defaulting to the left/primary side.
   const payout = leftPayout;
 
-  async function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt) {
+  async function openPosition(side, marketSnapshot, digitSnapshot, stakeAmt, tabId) {
     const marketLabel =
-      activeTab === "matches" ? "Matches/Differs" : activeTab === "evenodd" ? "Even/Odd" : "Over/Under";
+      tabId === "matches" ? "Matches/Differs" : tabId === "evenodd" ? "Even/Odd" : "Over/Under";
     const sideLabel = side === marketSnapshot.left.key ? marketSnapshot.left.label : marketSnapshot.right.label;
 
     const { tradeId, balance: newBalance, payout: confirmedPayout } = await backendApi("/api/trades", {
@@ -1703,7 +1736,7 @@ function TradingDashboard({
         accountType,
         symbolLabel: symbol.label,
         symbolId,
-        market: activeTab,
+        market: tabId,
         marketLabel,
         side,
         sideLabel,
@@ -1719,7 +1752,7 @@ function TradingDashboard({
       openTime: Date.now(),
       symbolLabel: symbol.label,
       symbolId,
-      market: activeTab,
+      market: tabId,
       marketLabel,
       side,
       sideLabel,
@@ -1734,10 +1767,10 @@ function TradingDashboard({
     return tradeId;
   }
 
-  async function runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfitVal, stopLossVal, isAuto, botConfig) {
+  async function runTick(side, marketSnapshot, digitSnapshot, stakeAmt, targetProfitVal, stopLossVal, isAuto, botConfig, tabId) {
     let id;
     try {
-      id = await openPosition(side, marketSnapshot, digitSnapshot, stakeAmt);
+      id = await openPosition(side, marketSnapshot, digitSnapshot, stakeAmt, tabId);
     } catch (err) {
       runningRef.current = false;
       setAutoRunning(false);
@@ -1861,7 +1894,7 @@ function TradingDashboard({
           nextStake = Number(nextStake.toFixed(2));
         }
         window.setTimeout(
-          () => runTick(side, marketSnapshot, digitSnapshot, nextStake, targetProfitVal, stopLossVal, true, botConfig),
+          () => runTick(side, marketSnapshot, digitSnapshot, nextStake, targetProfitVal, stopLossVal, true, botConfig, tabId),
           350
         );
       }
@@ -1916,10 +1949,10 @@ function TradingDashboard({
         baseStake: stakeAmt,
         maxStake: null,
         durationTicks: 5,
-      });
+      }, activeTab);
     } else {
       setTradeInFlight(true);
-      runTick(side, marketSnapshot, digitSnapshot, stakeAmt, null, null, false);
+      runTick(side, marketSnapshot, digitSnapshot, stakeAmt, null, null, false, null, activeTab);
     }
   }
 
@@ -1930,7 +1963,19 @@ function TradingDashboard({
    * the right panel's. `side` is whichever button (left/right) the bot
    * modal's picker had selected when Run was tapped.
    */
-  function startAutomateBot(side, config) {
+  /**
+   * Starts an AUTO run from the Automate bot modal's configuration —
+   * same underlying runTick loop as the quick AUTO panel, just sourced
+   * from the bot's own stake/strategy/duration/risk fields instead of
+   * the right panel's. `side` is whichever button (left/right) the bot
+   * modal's picker had selected when Run was tapped. `marketTab` is the
+   * market TYPE the bot picked (matches/evenodd/overunder) — this can
+   * be different from whatever tab is currently open on the main
+   * screen, so it's threaded through explicitly (not read from the
+   * `activeTab` closure, which would still hold the OLD tab immediately
+   * after setActiveTab — state updates aren't synchronous).
+   */
+  function startAutomateBot(side, config, marketTab) {
     if (tradeInFlight || autoRunning) return;
     const stakeAmt = Number(config.stake);
     if (!stakeAmt || stakeAmt <= 0) {
@@ -1946,9 +1991,10 @@ function TradingDashboard({
       return;
     }
 
-    const marketSnapshot = market;
+    const marketSnapshot = marketConfig[marketTab] || market;
     const digitSnapshot = selectedDigit;
 
+    setActiveTab(marketTab); // reflects the bot's chosen market on the main screen too
     setStake(stakeAmt);
     setStakeInput(String(stakeAmt));
     setMode("AUTO");
@@ -1964,7 +2010,7 @@ function TradingDashboard({
       baseStake: stakeAmt,
       maxStake: Number(config.maxStake) || null,
       durationTicks: config.durationTicks,
-    });
+    }, marketTab);
   }
 
   function requestStopRun() {
@@ -3021,16 +3067,17 @@ function TradingDashboard({
 
       {automateOpen && (
         <AutomateBotModal
-          market={market}
+          marketConfig={marketConfig}
+          initialTab={activeTab}
           onClose={() => setAutomateOpen(false)}
           initialStake={stake}
           initialTargetProfit={targetProfit}
           initialStopLoss={stopLoss}
           initialMultiplier={multiplier}
-          onRun={(side, config) => {
+          onRun={(marketTab, side, config) => {
             setAutomateOpen(false);
             setView("trade");
-            startAutomateBot(side, config);
+            startAutomateBot(side, config, marketTab);
           }}
         />
       )}
