@@ -742,74 +742,129 @@ const SCANNER_MARKETS = [
   { id: "evenodd", label: "Even/Odd" },
   { id: "overunder", label: "Over/Under" },
 ];
-const STEPS_PER_SYMBOL = 3;
 
-function AIScannerModal({ onClose, onLoadMarket }) {
+// ---------------------------------------------------------------------------
+// Real statistics computed from actual resolved trades — no random numbers
+// standing in for "confidence" or "AI score". A brand-new account simply
+// won't have data yet for most setups, and that's shown honestly ("Not
+// enough history") rather than papered over with a fabricated percentage.
+// ---------------------------------------------------------------------------
+
+/** Win/loss counts for one exact (symbol, side, digit) setup, from real trade history. */
+function computeSetupStats(trades, symbolId, side, digit) {
+  const matching = trades.filter((t) => {
+    if (t.symbolId !== symbolId || t.side !== side) return false;
+    if (t.status !== "won" && t.status !== "lost") return false;
+    if (side === "even" || side === "odd") return true; // no digit involved
+    return t.digit === digit;
+  });
+  const wins = matching.filter((t) => t.status === "won").length;
+  const total = matching.length;
+  return { wins, losses: total - wins, total, winRatePct: total ? Math.round((wins / total) * 1000) / 10 : null };
+}
+
+/** Digit frequency across a symbol's real resolved outcomes — hottest/coldest/missing. */
+function computeDigitHeatmap(trades, symbolId) {
+  const closed = trades.filter(
+    (t) => t.symbolId === symbolId && t.resultDigit != null && (t.status === "won" || t.status === "lost")
+  );
+  if (!closed.length) return null;
+  const counts = new Array(10).fill(0);
+  closed.forEach((t) => { counts[t.resultDigit] += 1; });
+  let hottest = 0, coldest = 0;
+  for (let d = 1; d < 10; d++) {
+    if (counts[d] > counts[hottest]) hottest = d;
+    if (counts[d] < counts[coldest]) coldest = d;
+  }
+  const missing = [];
+  for (let d = 0; d < 10; d++) if (counts[d] === 0) missing.push(d);
+  return { counts, total: closed.length, hottest, coldest, missing };
+}
+
+const MIN_SAMPLES_FOR_RECOMMENDATION = 5;
+
+function AIScannerModal({ trades, onClose, onLoadMarket }) {
   const [marketChoice, setMarketChoice] = useState("evenodd");
+  const [symbolId, setSymbolId] = useState(SYMBOLS[0].id);
+  const [side, setSide] = useState("even");
+  const [digit, setDigit] = useState(5);
   const [scanning, setScanning] = useState(false);
-  const [progress, setProgress] = useState(0); // 0..totalSteps
-  const [currentSymbol, setCurrentSymbol] = useState(null);
-  const [result, setResult] = useState(null);
+  const [scanProgress, setScanProgress] = useState(0);
+  const [scanCursor, setScanCursor] = useState(null); // symbol currently being checked
+  const [perSymbolResults, setPerSymbolResults] = useState(null); // [{symbol, stats}] after a scan
   const timerRef = useRef(null);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
-  const totalSteps = SYMBOLS.length * STEPS_PER_SYMBOL;
+  function switchMarket(id) {
+    setMarketChoice(id);
+    setPerSymbolResults(null);
+    if (id === "evenodd") setSide("even");
+    else if (id === "matches") setSide("matches");
+    else setSide("over");
+  }
 
-  function startScan() {
+  const digitApplies = marketChoice !== "evenodd";
+  const overUnderInvalid = marketChoice === "overunder" && ((side === "over" && digit >= 9) || (side === "under" && digit <= 0));
+
+  const currentStats = computeSetupStats(trades, symbolId, side, digitApplies ? digit : null);
+  const heatmap = computeDigitHeatmap(trades, symbolId);
+
+  /** Real work, not a fake delay: checks this exact (side, digit) setup against
+   * every instrument's actual trade history, one at a time, with a brief pause
+   * between each so the per-symbol result is visible as it completes. */
+  function runScan() {
+    if (overUnderInvalid) return;
     clearTimeout(timerRef.current);
-    setResult(null);
     setScanning(true);
-    setProgress(0);
-    let step = 0;
+    setScanProgress(0);
+    setPerSymbolResults([]);
+    let i = 0;
 
-    function tick() {
-      const symbolIdx = Math.min(Math.floor(step / STEPS_PER_SYMBOL), SYMBOLS.length - 1);
-      setCurrentSymbol(SYMBOLS[symbolIdx]);
-      step += 1;
-      setProgress(step);
-
-      if (step >= totalSteps) {
-        const winner = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
-        const digit = Math.floor(Math.random() * 10);
-        const confidence = 68 + Math.floor(Math.random() * 24); // 68-91%, deliberately not near 100
-
-        let side, sideLabel;
-        if (marketChoice === "evenodd") {
-          side = Math.random() < 0.5 ? "even" : "odd";
-          sideLabel = side === "even" ? "Even" : "Odd";
-        } else if (marketChoice === "matches") {
-          side = Math.random() < 0.5 ? "matches" : "differs";
-          sideLabel = side === "matches" ? "Matches" : "Differs";
-        } else {
-          side = Math.random() < 0.5 ? "over" : "under";
-          sideLabel = side === "over" ? "Over" : "Under";
-        }
-
-        setResult({ symbol: winner, side, sideLabel, digit, confidence });
+    function step() {
+      const sym = SYMBOLS[i];
+      setScanCursor(sym);
+      const stats = computeSetupStats(trades, sym.id, side, digitApplies ? digit : null);
+      setPerSymbolResults((prev) => [...prev, { symbol: sym, stats }]);
+      i += 1;
+      setScanProgress(i);
+      if (i >= SYMBOLS.length) {
         setScanning(false);
+        setScanCursor(null);
         return;
       }
-      timerRef.current = setTimeout(tick, 220);
+      timerRef.current = setTimeout(step, 260);
     }
-    tick();
+    step();
+  }
+
+  // Best real result from the scan, if any instrument has enough samples to
+  // actually mean something. Ties broken by more samples, not a coin flip.
+  const bestResult =
+    perSymbolResults && perSymbolResults.length === SYMBOLS.length
+      ? perSymbolResults
+          .filter((r) => r.stats.total >= MIN_SAMPLES_FOR_RECOMMENDATION)
+          .sort((a, b) => b.stats.winRatePct - a.stats.winRatePct || b.stats.total - a.stats.total)[0] || null
+      : null;
+  const scanCompleteWithNoData =
+    perSymbolResults && perSymbolResults.length === SYMBOLS.length && !bestResult;
+
+  function applySelection(chosenSymbolId) {
+    setSymbolId(chosenSymbolId);
   }
 
   const marketLabel = SCANNER_MARKETS.find((m) => m.id === marketChoice)?.label;
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center px-5">
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center">
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.65)" }} onClick={onClose} />
       <div
-        className="relative w-full max-w-sm rounded-3xl border overflow-hidden"
-        style={{ background: c.surface, borderColor: c.border, boxShadow: "0 24px 60px rgba(0,0,0,0.5)" }}
+        className="relative w-full sm:max-w-sm sm:rounded-3xl rounded-t-3xl max-h-[90vh] flex flex-col"
+        style={{ background: c.surface, borderColor: c.border, border: "1px solid" }}
       >
-        <div className="flex items-center gap-3 px-5 py-4 border-b" style={{ borderColor: c.border }}>
-          <div
-            className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{ background: "linear-gradient(135deg, #9333EA, #4F46E5)" }}
-          >
-            <Sparkles size={17} style={{ color: "#fff" }} />
+        <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: c.border }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: c.amberDim }}>
+            <Search size={17} style={{ color: c.amber }} />
           </div>
           <span className="text-base font-bold flex-1">Entry Scanner</span>
           <button onClick={onClose} aria-label="Close">
@@ -817,118 +872,238 @@ function AIScannerModal({ onClose, onLoadMarket }) {
           </button>
         </div>
 
-        <div className="px-5 py-4 max-h-[75vh] overflow-y-auto">
-          <p className="text-sm leading-relaxed mb-4" style={{ color: c.textDim }}>
-            Pick the market category you want to scan. The scanner checks every
-            volatility index and suggests an entry based on the current last-digit
-            spread — not a guarantee, just a starting point.
+        <div className="px-5 py-4 overflow-y-auto flex flex-col gap-5">
+          <p className="text-xs leading-relaxed" style={{ color: c.textFaint }}>
+            Every number below comes from your own resolved trades — win rate and sample
+            count for the exact setup you pick. New or rarely-used setups will honestly
+            show little or no history rather than a guessed number.
           </p>
 
-          <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
-            Market
-          </label>
-          <select
-            value={marketChoice}
-            onChange={(e) => {
-              setMarketChoice(e.target.value);
-              setResult(null);
-            }}
-            disabled={scanning}
-            className="w-full h-12 rounded-2xl px-4 text-sm font-semibold outline-none mb-4"
-            style={{ background: c.bg, border: `1px solid ${c.border}`, color: c.text }}
-          >
-            {SCANNER_MARKETS.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+          <div>
+            <label className="text-xs font-semibold mb-2 block" style={{ color: c.textDim }}>Market</label>
+            <div className="grid grid-cols-3 gap-2">
+              {SCANNER_MARKETS.map((m) => {
+                const selected = marketChoice === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => switchMarket(m.id)}
+                    disabled={scanning}
+                    className="h-11 rounded-xl text-xs font-bold px-1"
+                    style={{
+                      background: selected ? c.amber : c.surfaceAlt,
+                      color: selected ? "#181205" : c.textDim,
+                      border: `1px solid ${selected ? c.amber : c.border}`,
+                    }}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-          {(scanning || result) && (
-            <div className="mb-4">
-              <div className="flex items-center justify-between text-xs font-semibold mb-1.5">
-                <span style={{ color: "#C77DFF" }}>
-                  {result ? result.symbol.label : currentSymbol?.label}
-                </span>
-                <span style={{ color: c.textFaint }}>{progress}/{totalSteps}</span>
+          <div>
+            <label className="text-xs font-semibold mb-2 block" style={{ color: c.textDim }}>Side</label>
+            <div className="grid grid-cols-2 gap-2">
+              {(marketChoice === "matches"
+                ? [{ key: "matches", label: "Matches" }, { key: "differs", label: "Differs" }]
+                : marketChoice === "evenodd"
+                ? [{ key: "even", label: "Even" }, { key: "odd", label: "Odd" }]
+                : [{ key: "over", label: "Over" }, { key: "under", label: "Under" }]
+              ).map((opt) => {
+                const selected = side === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => { setSide(opt.key); setPerSymbolResults(null); }}
+                    disabled={scanning}
+                    className="h-11 rounded-xl text-sm font-bold"
+                    style={{
+                      background: selected ? c.amber : c.surfaceAlt,
+                      color: selected ? "#181205" : c.textDim,
+                      border: `1px solid ${selected ? c.amber : c.border}`,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {digitApplies && (
+            <div>
+              <label className="text-xs font-semibold mb-2 block" style={{ color: c.textDim }}>
+                {marketChoice === "matches" ? "Digit to predict" : "Threshold digit"}
+              </label>
+              <div className="grid grid-cols-5 gap-1.5">
+                {Array.from({ length: 10 }).map((_, d) => {
+                  const invalid = marketChoice === "overunder" && ((side === "over" && d >= 9) || (side === "under" && d <= 0));
+                  const selected = digit === d;
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => !invalid && setDigit(d)}
+                      disabled={scanning || invalid}
+                      className="h-10 rounded-lg text-sm font-bold"
+                      style={{
+                        background: invalid ? c.surfaceAlt : selected ? c.amber : c.elevated,
+                        color: invalid ? c.textFaint : selected ? "#181205" : c.text,
+                        opacity: invalid ? 0.4 : 1,
+                        border: `1px solid ${selected && !invalid ? c.amber : c.border}`,
+                      }}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+              {overUnderInvalid && (
+                <p className="text-[11px] mt-1.5" style={{ color: c.red }}>
+                  {side === "over" ? "Over 9" : "Under 0"} can never win — pick a different digit.
+                </p>
+              )}
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-semibold mb-2 block" style={{ color: c.textDim }}>Instrument</label>
+            <select
+              value={symbolId}
+              onChange={(e) => setSymbolId(e.target.value)}
+              disabled={scanning}
+              className="w-full h-12 rounded-2xl px-4 text-sm font-bold outline-none"
+              style={{ background: c.bg, border: `1px solid ${c.border}`, color: c.text }}
+            >
+              {SYMBOLS.map((s) => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="rounded-2xl border p-4" style={{ background: c.elevated, borderColor: c.border }}>
+            <div className="text-xs font-semibold mb-2" style={{ color: c.textFaint }}>
+              {SYMBOLS.find((s) => s.id === symbolId)?.label} — real history
+            </div>
+            {currentStats.total > 0 ? (
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: c.surfaceAlt }}>
+                    <div className="h-full rounded-full" style={{ width: `${currentStats.winRatePct}%`, background: c.green }} />
+                  </div>
+                  <span className="text-sm font-bold font-mono" style={{ color: c.green }}>{currentStats.winRatePct}%</span>
+                </div>
+                <div className="text-xs" style={{ color: c.textDim }}>
+                  {currentStats.wins}W / {currentStats.losses}L · {currentStats.total} sample{currentStats.total === 1 ? "" : "s"}
+                </div>
+              </>
+            ) : (
+              <div className="text-xs" style={{ color: c.textFaint }}>
+                No resolved trades yet for this exact setup on this instrument.
+              </div>
+            )}
+            {heatmap && (
+              <div className="text-[11px] mt-3 pt-3 border-t" style={{ borderColor: c.border, color: c.textFaint }}>
+                Digit history ({heatmap.total} trades): hottest {heatmap.hottest} · coldest {heatmap.coldest}
+                {heatmap.missing.length > 0 && <> · never hit: {heatmap.missing.join(", ")}</>}
+              </div>
+            )}
+          </div>
+
+          {(scanning || (perSymbolResults && perSymbolResults.length > 0)) && (
+            <div>
+              <div className="flex items-center justify-between text-xs font-semibold mb-1.5" style={{ color: c.textDim }}>
+                <span>Comparing all instruments for {marketLabel} · {side}{digitApplies ? ` ${digit}` : ""}</span>
+                <span style={{ color: c.textFaint }}>{scanProgress}/{SYMBOLS.length}</span>
               </div>
               <div className="h-1.5 rounded-full overflow-hidden mb-2" style={{ background: c.elevated }}>
                 <div
                   className="h-full rounded-full transition-all duration-200"
-                  style={{
-                    width: `${(progress / totalSteps) * 100}%`,
-                    background: "linear-gradient(90deg, #9333EA, #EC4899)",
-                  }}
+                  style={{ width: `${(scanProgress / SYMBOLS.length) * 100}%`, background: c.amber }}
                 />
               </div>
-              {scanning && (
-                <div className="flex items-center gap-2 text-sm" style={{ color: c.textDim }}>
-                  <Loader2 size={14} className="animate-spin" />
-                  Scanning {currentSymbol?.label}…
+              {scanning && scanCursor && (
+                <div className="flex items-center gap-2 text-sm mb-2" style={{ color: c.textDim }}>
+                  <Loader2 size={14} className="animate-spin" /> Checking {scanCursor.label}…
+                </div>
+              )}
+              {perSymbolResults && perSymbolResults.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  {perSymbolResults.map(({ symbol, stats }) => (
+                    <button
+                      key={symbol.id}
+                      onClick={() => applySelection(symbol.id)}
+                      className="flex items-center justify-between rounded-xl px-3 py-2"
+                      style={{
+                        background: symbolId === symbol.id ? c.amberDim : "transparent",
+                        border: `1px solid ${symbolId === symbol.id ? c.amber : c.border}`,
+                      }}
+                    >
+                      <span className="text-xs font-semibold">{symbol.label}</span>
+                      <span className="text-xs font-mono" style={{ color: stats.total > 0 ? c.textDim : c.textFaint }}>
+                        {stats.total > 0 ? `${stats.winRatePct}% · ${stats.total} sample${stats.total === 1 ? "" : "s"}` : "no data"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {scanCompleteWithNoData && (
+                <p className="text-[11px] mt-2" style={{ color: c.textFaint }}>
+                  None of your instruments have {MIN_SAMPLES_FOR_RECOMMENDATION}+ resolved trades on this
+                  exact setup yet, so there's no reliable pick — the table above shows what little history
+                  exists. Trade a bit first, or launch the bot anyway with your own choice below.
+                </p>
+              )}
+              {bestResult && (
+                <div
+                  className="flex items-center gap-2 rounded-xl px-3 py-2.5 mt-2"
+                  style={{ background: c.greenDim }}
+                >
+                  <ShieldCheck size={14} style={{ color: c.green, flexShrink: 0 }} />
+                  <span className="text-xs font-semibold" style={{ color: c.green }}>
+                    Best real result: {bestResult.symbol.label} at {bestResult.stats.winRatePct}%
+                    ({bestResult.stats.total} samples)
+                  </span>
                 </div>
               )}
             </div>
           )}
 
-          {result && !scanning && (
-            <div
-              className="rounded-2xl border p-4 mb-4"
-              style={{ background: c.elevated, borderColor: c.border }}
-            >
-              <div className="text-xs font-semibold mb-2" style={{ color: c.textFaint }}>
-                SUGGESTED ENTRY
-              </div>
-              <div className="text-base font-bold mb-1">{result.symbol.label}</div>
-              <div className="text-sm mb-2" style={{ color: c.textDim }}>
-                {marketLabel} ·{" "}
-                <span style={{ color: c.amber, fontWeight: 700 }}>{result.sideLabel}</span>
-                {(marketChoice === "matches" || marketChoice === "overunder") && (
-                  <> · Digit {result.digit}</>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: c.surfaceAlt }}>
-                  <div
-                    className="h-full rounded-full"
-                    style={{ width: `${result.confidence}%`, background: c.green }}
-                  />
-                </div>
-                <span className="text-xs font-bold font-mono" style={{ color: c.green }}>
-                  {result.confidence}%
-                </span>
-              </div>
-            </div>
-          )}
-
           <button
-            onClick={startScan}
-            disabled={scanning}
-            className="w-full h-12 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 mb-2.5"
+            onClick={runScan}
+            disabled={scanning || overUnderInvalid}
+            className="w-full h-12 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
             style={{
-              background: scanning ? c.elevated : "linear-gradient(90deg, #7C3AED, #4F46E5)",
-              color: scanning ? c.textDim : "#fff",
+              background: scanning || overUnderInvalid ? c.elevated : c.amberDim,
+              color: scanning || overUnderInvalid ? c.textFaint : c.amber,
+              border: `1px solid ${scanning || overUnderInvalid ? c.border : c.amber}`,
             }}
           >
             {scanning ? (
               <>
-                <Loader2 size={15} className="animate-spin" /> Deep Scanning…
+                <Loader2 size={15} className="animate-spin" /> Comparing instruments…
               </>
             ) : (
               <>
-                <Search size={15} /> {result ? "Scan Again" : "Deep Scan for Best Market"}
+                <Search size={15} /> Compare all instruments
               </>
             )}
           </button>
+        </div>
 
+        <div className="px-5 py-4 border-t flex-shrink-0" style={{ borderColor: c.border }}>
           <button
-            onClick={() => result && onLoadMarket(result, marketChoice)}
-            disabled={!result || scanning}
+            onClick={() => !overUnderInvalid && onLoadMarket({ symbolId, marketChoice, side, digit: digitApplies ? digit : null })}
+            disabled={overUnderInvalid}
             className="w-full h-12 rounded-2xl text-sm font-bold"
             style={{
-              background: result && !scanning ? c.amber : c.elevated,
-              color: result && !scanning ? "#181205" : c.textFaint,
-              cursor: result && !scanning ? "pointer" : "not-allowed",
+              background: overUnderInvalid ? c.elevated : c.amber,
+              color: overUnderInvalid ? c.textFaint : "#181205",
+              cursor: overUnderInvalid ? "not-allowed" : "pointer",
             }}
           >
-            Load This Market
+            Load Scanner Bot
           </button>
         </div>
       </div>
@@ -1003,10 +1178,10 @@ function AiMenuModal({ onClose, onPickScanner, onPickAutomate }) {
 // markets (Matches/Differs, Even/Odd, Over/Under) don't have an "equals"
 // outcome distinct from what's already covered, so a toggle for it would
 // have nothing to actually do.
-function AutomateBotModal({ marketConfig, initialTab, onClose, onRun, initialStake, initialTargetProfit, initialStopLoss, initialMultiplier }) {
+function AutomateBotModal({ marketConfig, initialTab, initialSide, onClose, onRun, initialStake, initialTargetProfit, initialStopLoss, initialMultiplier }) {
   const [marketTab, setMarketTab] = useState(initialTab);
   const market = marketConfig[marketTab];
-  const [side, setSide] = useState(market.left.key);
+  const [side, setSide] = useState(initialSide || market.left.key);
   const [durationTicks, setDurationTicks] = useState("5");
   const [stake, setStake] = useState(String(initialStake || 1));
   const [strategy, setStrategy] = useState("martingale"); // "martingale" | "flat"
@@ -1014,6 +1189,7 @@ function AutomateBotModal({ marketConfig, initialTab, onClose, onRun, initialSta
   const [maxStake, setMaxStake] = useState("");
   const [profitThreshold, setProfitThreshold] = useState(String(initialTargetProfit || ""));
   const [lossThreshold, setLossThreshold] = useState(String(initialStopLoss || ""));
+  const [winsTarget, setWinsTarget] = useState("");
 
   // Switching market type resets the side to that market's left/primary
   // option — "Matches" no longer applies once you're on Even/Odd, so
@@ -1032,6 +1208,7 @@ function AutomateBotModal({ marketConfig, initialTab, onClose, onRun, initialSta
       maxStake,
       profitThreshold,
       lossThreshold,
+      winsTarget,
     });
   }
 
@@ -1200,6 +1377,21 @@ function AutomateBotModal({ marketConfig, initialTab, onClose, onRun, initialSta
                     value={lossThreshold}
                     onChange={(e) => setLossThreshold(e.target.value.replace(/[^0-9.]/g, ""))}
                     inputMode="decimal"
+                    className="flex-1 bg-transparent outline-none text-sm font-bold"
+                    style={{ color: c.text }}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>
+                  Number of wins <span className="font-normal" style={{ color: c.textFaint }}>(optional)</span>
+                </label>
+                <div className="flex items-center h-12 rounded-2xl border px-4" style={{ background: c.bg, borderColor: c.border }}>
+                  <input
+                    value={winsTarget}
+                    onChange={(e) => setWinsTarget(e.target.value.replace(/[^0-9]/g, ""))}
+                    placeholder="No limit"
+                    inputMode="numeric"
                     className="flex-1 bg-transparent outline-none text-sm font-bold"
                     style={{ color: c.text }}
                   />
@@ -1505,13 +1697,16 @@ function TradingDashboard({
     openingPriceRef.current = freshData[0].price;
   }
 
-  function handleLoadScannedMarket(result, marketChoice) {
+  const [pendingBotSide, setPendingBotSide] = useState(null); // carries the scanner's exact chosen side into the Automate modal
+
+  function handleLoadScannedMarket({ symbolId, marketChoice, side, digit }) {
     if (autoRunning) return;
-    switchSymbol(result.symbol.id);
+    switchSymbol(symbolId);
     setActiveTab(marketChoice);
-    if (marketChoice !== "evenodd") setSelectedDigit(result.digit);
+    if (digit != null) setSelectedDigit(digit);
+    setPendingBotSide(side);
     setAiScannerOpen(false);
-    setView("trade");
+    setAutomateOpen(true); // "Load Scanner Bot" hands straight into the bot config, prefilled
   }
 
   // simulate a live-ish feed, scaled to the active symbol's volatility
@@ -1856,8 +2051,9 @@ function TradingDashboard({
       // AUTO mode: decide whether to run another tick.
       const hitTarget = targetProfitVal && next.net >= Number(targetProfitVal);
       const hitStopLoss = stopLossVal && next.net <= -Number(stopLossVal);
+      const hitWinsTarget = botConfig?.winsTarget && next.wins >= Number(botConfig.winsTarget);
       const outOfFunds = stakeAmt > balanceRef.current;
-      const shouldStop = !runningRef.current || hitTarget || hitStopLoss || outOfFunds;
+      const shouldStop = !runningRef.current || hitTarget || hitStopLoss || hitWinsTarget || outOfFunds;
 
       if (shouldStop) {
         runningRef.current = false;
@@ -1867,6 +2063,8 @@ function TradingDashboard({
           type: next.net >= 0 ? "win" : "loss",
           title: hitTarget
             ? "Target profit reached 🎯"
+            : hitWinsTarget
+            ? "Win target reached 🎯"
             : hitStopLoss
             ? "Stop loss reached"
             : outOfFunds
@@ -2010,9 +2208,9 @@ function TradingDashboard({
       baseStake: stakeAmt,
       maxStake: Number(config.maxStake) || null,
       durationTicks: config.durationTicks,
+      winsTarget: config.winsTarget,
     }, marketTab);
   }
-
   function requestStopRun() {
     runningRef.current = false;
     setStopRequested(true);
@@ -3060,6 +3258,7 @@ function TradingDashboard({
 
       {aiScannerOpen && (
         <AIScannerModal
+          trades={trades}
           onClose={() => setAiScannerOpen(false)}
           onLoadMarket={handleLoadScannedMarket}
         />
@@ -3069,13 +3268,15 @@ function TradingDashboard({
         <AutomateBotModal
           marketConfig={marketConfig}
           initialTab={activeTab}
-          onClose={() => setAutomateOpen(false)}
+          initialSide={pendingBotSide}
+          onClose={() => { setAutomateOpen(false); setPendingBotSide(null); }}
           initialStake={stake}
           initialTargetProfit={targetProfit}
           initialStopLoss={stopLoss}
           initialMultiplier={multiplier}
           onRun={(marketTab, side, config) => {
             setAutomateOpen(false);
+            setPendingBotSide(null);
             setView("trade");
             startAutomateBot(side, config, marketTab);
           }}
