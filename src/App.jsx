@@ -2432,6 +2432,7 @@ function TradingDashboard({
                 { icon: Wallet, label: "Deposit", nav: "deposit" },
                 { icon: ArrowLeftRight, label: "Withdraw", nav: "withdraw" },
                 { icon: History, label: "History", nav: "history" },
+                { icon: BarChart3, label: "Analysis Tools", nav: "analysis" },
                 { icon: Gift, label: "Refer & Earn", highlight: true, nav: "refer" },
               ].map(({ icon: Icon, label, highlight, nav }) => (
                 <button
@@ -5976,6 +5977,245 @@ function HistoryScreen({ trades, payments, onBack, onRefresh }) {
 }
 
 // ---------------------------------------------------------------------------
+// ANALYSIS TOOLS — real live digit-distribution stats per instrument, in the
+// style of the "Dcircles" tool shown in the reference screenshot. Built on
+// the SAME simulated price feed the trade chart already uses (same noise
+// formula, same symbol.vol per instrument) — not a separate fake data
+// source.
+//
+// IMPORTANT HONESTY NOTE: the "digit" analyzed here is extracted from the
+// live simulated PRICE (last digit of the price to 2 decimals — the same
+// convention real tick-trading platforms use). This is NOT the same
+// resultDigit the backend uses to settle actual trades — routes/trades.js
+// generates that independently via Math.random(), unconnected to this
+// price feed. So this tool honestly describes a real pattern in the
+// displayed price series; it does not predict or explain real trade
+// outcomes. That's disclosed directly in the UI below, not just in code
+// comments.
+// ---------------------------------------------------------------------------
+
+const ANALYSIS_WINDOW_DEFAULT = 120;
+
+function lastDigitOfPrice(price) {
+  return Math.abs(Math.round(price * 100)) % 10;
+}
+
+function SplitStatBar({ leftLabel, leftPct, rightLabel, rightPct }) {
+  return (
+    <div className="h-9 rounded-full overflow-hidden flex text-xs font-bold">
+      <div
+        className="flex items-center pl-3 truncate"
+        style={{ width: `${leftPct}%`, background: c.green, color: "#06210F", minWidth: leftPct > 0 ? 60 : 0 }}
+      >
+        {leftLabel}: {leftPct.toFixed(1)}%
+      </div>
+      <div
+        className="flex items-center justify-end pr-3 truncate flex-1"
+        style={{ background: c.red, color: "#2A0508" }}
+      >
+        {rightLabel}: {rightPct.toFixed(1)}%
+      </div>
+    </div>
+  );
+}
+
+function InstrumentAnalysisCard({ symbol, ticks, windowSize }) {
+  const digits = ticks.map((t) => t.digit);
+  const total = digits.length;
+  const counts = new Array(10).fill(0);
+  digits.forEach((d) => { counts[d] += 1; });
+  const maxCount = total ? Math.max(...counts) : 0;
+  const minCount = total ? Math.min(...counts) : 0;
+  const lastDigit = total ? digits[total - 1] : null;
+
+  const evenCount = digits.filter((d) => d % 2 === 0).length;
+  const oddCount = total - evenCount;
+
+  let riseCount = 0, fallCount = 0;
+  for (let i = 1; i < ticks.length; i++) {
+    if (ticks[i].price > ticks[i - 1].price) riseCount += 1;
+    else fallCount += 1;
+  }
+  const riseFallTotal = riseCount + fallCount;
+
+  const overCount = digits.filter((d) => d > 4).length; // 5-9
+  const underCount = total - overCount; // 0-4
+
+  const recentStrip = digits.slice(-10);
+  const currentPrice = ticks.length ? ticks[ticks.length - 1].price : symbol.base;
+
+  return (
+    <div className="rounded-3xl border p-4 mb-4" style={{ background: c.surface, borderColor: c.border }}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-sm font-bold">{symbol.label}</span>
+        <span
+          className="text-[11px] font-bold px-2 py-0.5 rounded-full"
+          style={{ background: c.amberDim, color: c.amber }}
+        >
+          {total}/{windowSize}
+        </span>
+      </div>
+      <div className="text-lg font-bold font-mono mb-3" style={{ color: c.textDim }}>
+        {currentPrice.toFixed(2)}
+      </div>
+
+      {total === 0 ? (
+        <div className="text-xs py-6 text-center" style={{ color: c.textFaint }}>
+          Collecting ticks — this fills in live over the next couple of minutes.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-5 gap-2 mb-3">
+            {Array.from({ length: 10 }).map((_, d) => {
+              const pct = total ? (counts[d] / total) * 100 : 0;
+              const isHottest = counts[d] === maxCount && maxCount > 0;
+              const isColdest = counts[d] === minCount && total >= 10;
+              const isCurrent = d === lastDigit;
+              return (
+                <div key={d} className="flex flex-col items-center">
+                  <div
+                    className="w-11 h-11 rounded-full flex flex-col items-center justify-center text-[10px] font-bold"
+                    style={{
+                      background: isHottest ? c.greenDim : isColdest ? c.redDim : c.elevated,
+                      color: isHottest ? c.green : isColdest ? c.red : c.text,
+                      border: `2px solid ${isCurrent ? c.amber : "transparent"}`,
+                    }}
+                  >
+                    <span className="text-sm font-extrabold leading-none">{d}</span>
+                    <span className="leading-none mt-0.5">{pct.toFixed(1)}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-1 mb-3 overflow-x-auto pb-1">
+            {recentStrip.map((d, i) => (
+              <span
+                key={i}
+                className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold"
+                style={{ background: d > 4 ? c.greenDim : c.redDim, color: d > 4 ? c.green : c.red }}
+              >
+                {d}
+              </span>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <SplitStatBar
+              leftLabel="Even"
+              leftPct={total ? (evenCount / total) * 100 : 0}
+              rightLabel="Odd"
+              rightPct={total ? (oddCount / total) * 100 : 0}
+            />
+            <SplitStatBar
+              leftLabel="Rise"
+              leftPct={riseFallTotal ? (riseCount / riseFallTotal) * 100 : 0}
+              rightLabel="Fall"
+              rightPct={riseFallTotal ? (fallCount / riseFallTotal) * 100 : 0}
+            />
+            <SplitStatBar
+              leftLabel="Over 4"
+              leftPct={total ? (overCount / total) * 100 : 0}
+              rightLabel="Under 5"
+              rightPct={total ? (underCount / total) * 100 : 0}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AnalysisToolsScreen({ onBack }) {
+  const [windowInput, setWindowInput] = useState(String(ANALYSIS_WINDOW_DEFAULT));
+  const windowSize = Math.max(10, Number(windowInput) || ANALYSIS_WINDOW_DEFAULT);
+  const [instrumentFilter, setInstrumentFilter] = useState("all"); // "all" | a symbolId
+
+  // One independent simulated price per instrument, all ticking together
+  // every second — same noise model as the main chart (symbol.vol), just
+  // running for every instrument at once instead of only the active one,
+  // since this screen needs to compare across all of them simultaneously.
+  const [histories, setHistories] = useState(() => {
+    const init = {};
+    SYMBOLS.forEach((s) => { init[s.id] = { price: s.base, ticks: [] }; });
+    return init;
+  });
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setHistories((prev) => {
+        const next = {};
+        for (const s of SYMBOLS) {
+          const h = prev[s.id];
+          const noise = (Math.random() - 0.5) * s.base * s.vol;
+          const price = Number((h.price + noise).toFixed(2));
+          const digit = lastDigitOfPrice(price);
+          const ticks = [...h.ticks, { price, digit }].slice(-windowSize);
+          next[s.id] = { price, ticks };
+        }
+        return next;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+    // windowSize intentionally not a dependency — changing it just trims
+    // future ticks going forward, no need to restart the whole feed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const shownSymbols = instrumentFilter === "all" ? SYMBOLS : SYMBOLS.filter((s) => s.id === instrumentFilter);
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: c.bg, color: c.text }}>
+      <MoneyHeader title="Analysis Tools" onBack={onBack} />
+      <div className="flex-1 px-4 sm:px-6 py-5 max-w-2xl w-full mx-auto">
+        <div
+          className="rounded-2xl px-4 py-3 mb-4 flex items-start gap-2.5"
+          style={{ background: c.amberDim }}
+        >
+          <Info size={15} style={{ color: c.amber, flexShrink: 0, marginTop: 1 }} />
+          <p className="text-xs leading-relaxed" style={{ color: c.amber }}>
+            These stats describe the live price feed shown on the chart — they don't predict or
+            explain actual trade results, which are settled independently.
+          </p>
+        </div>
+
+        <div className="flex gap-3 mb-4">
+          <div className="flex-1">
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Instrument</label>
+            <select
+              value={instrumentFilter}
+              onChange={(e) => setInstrumentFilter(e.target.value)}
+              className="w-full h-12 rounded-2xl px-4 text-sm font-bold outline-none"
+              style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, color: c.text }}
+            >
+              <option value="all">All instruments</option>
+              {SYMBOLS.map((s) => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="w-24">
+            <label className="text-xs font-semibold mb-1.5 block" style={{ color: c.textDim }}>Ticks</label>
+            <input
+              value={windowInput}
+              onChange={(e) => setWindowInput(e.target.value.replace(/[^0-9]/g, ""))}
+              inputMode="numeric"
+              className="w-full h-12 rounded-2xl px-3 text-sm font-bold outline-none text-center"
+              style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, color: c.text }}
+            />
+          </div>
+        </div>
+
+        {shownSymbols.map((s) => (
+          <InstrumentAnalysisCard key={s.id} symbol={s} ticks={histories[s.id].ticks} windowSize={windowSize} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ABOUT / RESPONSIBLE TRADING
 // ---------------------------------------------------------------------------
 function AboutScreen({ onBack }) {
@@ -7527,6 +7767,9 @@ export default function App() {
         }}
       />
     );
+  }
+  if (screen === "analysis") {
+    return <AnalysisToolsScreen onBack={() => setScreen("dashboard")} />;
   }
   if (screen === "about") {
     return <AboutScreen onBack={() => setScreen("dashboard")} />;
