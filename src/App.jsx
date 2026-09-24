@@ -866,7 +866,12 @@ function AIScannerModal({ trades, onClose, onLoadMarket }) {
           <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: c.amberDim }}>
             <Search size={17} style={{ color: c.amber }} />
           </div>
-          <span className="text-base font-bold flex-1">Entry Scanner</span>
+          <div className="flex-1">
+            <div className="text-base font-bold leading-tight">Entry Scanner</div>
+            <div className="text-[11px] leading-tight" style={{ color: c.textFaint }}>
+              Deep-scans all {SYMBOLS.length} instruments for the best entry
+            </div>
+          </div>
           <button onClick={onClose} aria-label="Close">
             <X size={18} style={{ color: c.textDim }} />
           </button>
@@ -2608,6 +2613,21 @@ function TradingDashboard({
                   );
                 })}
               </div>
+
+              <button
+                onClick={() => !autoRunning && !tradeInFlight && setAiScannerOpen(true)}
+                disabled={autoRunning || tradeInFlight}
+                className="w-full flex items-center justify-center gap-2 h-11 rounded-2xl text-sm font-bold mb-5"
+                style={{
+                  background: c.amberDim,
+                  color: c.amber,
+                  border: `1px solid ${c.amber}`,
+                  opacity: autoRunning || tradeInFlight ? 0.6 : 1,
+                  cursor: autoRunning || tradeInFlight ? "not-allowed" : "pointer",
+                }}
+              >
+                <Search size={15} /> AI Scanner Bot
+              </button>
 
               {/* Stake */}
               <div className="mb-4">
